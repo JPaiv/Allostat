@@ -60,11 +60,21 @@ A request is judged by the contract in its own namespace that has the same
 action. The requester cannot pick a contract, and its spec cannot change
 after it is created.
 
+`cmd/allostat` is the coordinator. It decides each new request once and
+writes the answer to the request's status. A decision is final: a refused
+request stays refused, and the requester asks again with a new request. A
+granted request holds its grant until the request is deleted.
+
+The coordinator keeps no state of its own. It decides one request at a time
+and reads everything from the API server at that moment, so a grant that was
+just written always counts for the next decision. Run one coordinator, with
+leader election (the default). The access rules it needs are in
+`config/rbac`.
+
 ## Planned
 
-- A controller that runs the decision core and writes each decision to the
-  request's status.
 - A way for the requester to report the result, which closes the grant.
+- A container image and an example that runs in a local cluster.
 
 ## Development
 

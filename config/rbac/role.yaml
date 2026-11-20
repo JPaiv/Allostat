@@ -1,0 +1,38 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: allostat-coordinator
+rules:
+- apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - allostat.io
+  resources:
+  - actionrequests
+  - contracts
+  - observations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - allostat.io
+  resources:
+  - actionrequests/status
+  verbs:
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - update
