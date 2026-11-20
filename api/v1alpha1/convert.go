@@ -50,14 +50,21 @@ func (r *ActionRequest) ToAdmission() admission.Request {
 
 // OpenGrant returns the grant this request holds, if it holds one.
 //
-// A granted request holds its grant for as long as the object exists.
-// Reporting a result will close it; that is not defined yet.
+// A granted request holds its grant until the requester reports success or
+// the request is deleted. A reported failure does not close the grant: the
+// target may still be out.
 func (r *ActionRequest) OpenGrant() (admission.Grant, bool) {
 	s := r.Status
 	if s.Decision != DecisionGranted || s.DecidedAt == nil || s.Deadline == nil {
 		return admission.Grant{}, false
 	}
+	result := r.Spec.Result
+	if result != nil && result.Outcome == OutcomeSucceeded {
+		return admission.Grant{}, false
+	}
 	return admission.Grant{
+		// Any result that is not a success counts as a failure.
+		Failed:    result != nil,
 		RequestID: r.Name,
 		Action:    r.Spec.Action,
 		Target:    r.Spec.Target.toAdmission(),

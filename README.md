@@ -57,13 +57,19 @@ decision := admission.Decide(contract, request, observations, openGrants, time.N
 | `ActionRequest` | the controller that wants to act | the action and the target; the decision is in the status |
 
 A request is judged by the contract in its own namespace that has the same
-action. The requester cannot pick a contract, and its spec cannot change
-after it is created.
+action. The requester cannot pick a contract, and it cannot change the
+action or the target after the request is created.
 
 `cmd/allostat` is the coordinator. It decides each new request once and
 writes the answer to the request's status. A decision is final: a refused
-request stays refused, and the requester asks again with a new request. A
-granted request holds its grant until the request is deleted.
+request stays refused, and the requester asks again with a new request.
+
+When the action has ended, the requester reports the result in
+`spec.result`, once:
+
+- `Succeeded` closes the grant. The target's place in the budgets is free.
+- `Failed` keeps the grant open, because the target may still be out. A
+  person closes it by deleting the request.
 
 The coordinator keeps no state of its own. It decides one request at a time
 and reads everything from the API server at that moment, so a grant that was
@@ -73,7 +79,6 @@ leader election (the default). The access rules it needs are in
 
 ## Planned
 
-- A way for the requester to report the result, which closes the grant.
 - A container image and an example that runs in a local cluster.
 
 ## Development

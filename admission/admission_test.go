@@ -42,6 +42,12 @@ func openGrant(id string, t Target, deadline time.Time) Grant {
 	return Grant{RequestID: id, Action: "restart", Target: t, GrantedAt: deadline.Add(-10 * time.Minute), Deadline: deadline}
 }
 
+func failedGrant(id string, t Target) Grant {
+	g := openGrant(id, t, now.Add(-time.Hour))
+	g.Failed = true
+	return g
+}
+
 func TestGrantWhenEvidenceIsFreshAndBudgetsAreFree(t *testing.T) {
 	a := node("a", "1", "false")
 	d := Decide(restartContract(), request("r1", a), healthy("a"), nil, now)
@@ -119,13 +125,25 @@ func TestRefusals(t *testing.T) {
 			name: "peer in the same shard holds a grant", contract: restartContract(), req: request("r2", a),
 			obs:  healthy("a"),
 			open: []Grant{openGrant("r1", b, now.Add(5*time.Minute))},
-			want: "budget shard=1 is full: 1 of 1 in use, 0 overdue",
+			want: "budget shard=1 is full: 1 of 1 in use, 0 overdue, 0 failed",
 		},
 		{
 			name: "overdue grant still holds the budget", contract: restartContract(), req: request("r2", a),
 			obs:  healthy("a"),
 			open: []Grant{openGrant("r1", b, now.Add(-time.Hour))},
-			want: "budget shard=1 is full: 1 of 1 in use, 1 overdue",
+			want: "budget shard=1 is full: 1 of 1 in use, 1 overdue, 0 failed",
+		},
+		{
+			name: "failed grant still holds the budget", contract: restartContract(), req: request("r2", a),
+			obs:  healthy("a"),
+			open: []Grant{failedGrant("r1", b)},
+			want: "budget shard=1 is full: 1 of 1 in use, 0 overdue, 1 failed",
+		},
+		{
+			name: "target with a failed grant is not granted again", contract: restartContract(), req: request("r2", a),
+			obs:  healthy("a"),
+			open: []Grant{failedGrant("r1", a)},
+			want: `target "a" already has an open grant (request "r1"), reported as failed`,
 		},
 		{
 			name: "another gated node holds a grant", contract: restartContract(), req: request("r2", gatedA),

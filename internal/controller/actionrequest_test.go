@@ -215,6 +215,52 @@ func TestBudgetCountsGrantsWrittenBefore(t *testing.T) {
 	wantGranted(t, w.ask("r3", "c", "2"))
 }
 
+// report writes the requester's result into a granted request.
+func (w *world) report(name string, outcome v1alpha1.Outcome) {
+	w.t.Helper()
+	var r v1alpha1.ActionRequest
+	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: w.ns, Name: name}, &r); err != nil {
+		w.t.Fatal(err)
+	}
+	r.Spec.Result = &v1alpha1.Result{Outcome: outcome}
+	if err := k8s.Update(context.Background(), &r); err != nil {
+		w.t.Fatalf("report %q for %q: %v", outcome, name, err)
+	}
+}
+
+func TestSuccessFreesTheBudget(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	w.observe("b", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+	wantRefused(t, w.ask("r2", "b", "1"), "budget shard=1 is full")
+
+	w.report("r1", v1alpha1.OutcomeSucceeded)
+	wantGranted(t, w.ask("r3", "b", "1"))
+	// The report does not change the decision that was made.
+	wantGranted(t, w.reconcile("r1"))
+}
+
+func TestFailureKeepsTheBudget(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	w.observe("b", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+
+	w.report("r1", v1alpha1.OutcomeFailed)
+	wantRefused(t, w.ask("r2", "b", "1"), "1 of 1 in use, 0 overdue, 1 failed")
+	wantRefused(t, w.ask("r3", "a", "1"), `already has an open grant (request "r1"), reported as failed`)
+
+	// A person clears a failed grant by deleting the request.
+	r1 := &v1alpha1.ActionRequest{ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: w.ns}}
+	if err := k8s.Delete(context.Background(), r1); err != nil {
+		t.Fatal(err)
+	}
+	wantGranted(t, w.ask("r4", "b", "1"))
+}
+
 func TestOverdueGrantStillBlocks(t *testing.T) {
 	w := newWorld(t)
 	w.contract("restart")

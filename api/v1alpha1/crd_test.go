@@ -117,13 +117,89 @@ func TestCRDs(t *testing.T) {
 		mustFail(t, c.Create(ctx, bad), "spec.status")
 	})
 
-	t.Run("request spec cannot change", func(t *testing.T) {
+	t.Run("action, requester and target cannot change", func(t *testing.T) {
+		const want = "action, requester and target cannot change after the request is created"
 		r := request("fixed")
 		if err := c.Create(ctx, r); err != nil {
 			t.Fatal(err)
 		}
-		r.Spec.Target.Name = "b"
-		mustFail(t, c.Update(ctx, r), "spec cannot change after the request is created")
+		for name, change := range map[string]func(*v1alpha1.ActionRequest){
+			"target name":  func(r *v1alpha1.ActionRequest) { r.Spec.Target.Name = "b" },
+			"target label": func(r *v1alpha1.ActionRequest) { r.Spec.Target.Labels["shard"] = "2" },
+			"action":       func(r *v1alpha1.ActionRequest) { r.Spec.Action = "reboot" },
+			"requester":    func(r *v1alpha1.ActionRequest) { r.Spec.Requester = "other" },
+		} {
+			changed := r.DeepCopy()
+			change(changed)
+			if err := c.Update(ctx, changed); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s: want %q, got %v", name, want, err)
+			}
+		}
+	})
+
+	// decide writes a decision the way the coordinator does.
+	decide := func(t *testing.T, r *v1alpha1.ActionRequest, d v1alpha1.Decision) {
+		t.Helper()
+		now := metav1.NewMicroTime(time.Now().UTC().Truncate(time.Microsecond))
+		r.Status = v1alpha1.ActionRequestStatus{Decision: d, DecidedAt: &now}
+		if d == v1alpha1.DecisionGranted {
+			deadline := metav1.NewMicroTime(now.Add(10 * time.Minute))
+			r.Status.Deadline = &deadline
+		}
+		if err := c.Status().Update(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const notGranted = "a result can be reported only for a granted request"
+
+	t.Run("request cannot be created with a result", func(t *testing.T) {
+		r := request("result-at-create")
+		r.Spec.Result = &v1alpha1.Result{Outcome: v1alpha1.OutcomeSucceeded}
+		mustFail(t, c.Create(ctx, r), notGranted)
+	})
+
+	t.Run("result cannot be reported before a decision or after a refusal", func(t *testing.T) {
+		r := request("result-early")
+		if err := c.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		r.Spec.Result = &v1alpha1.Result{Outcome: v1alpha1.OutcomeSucceeded}
+		mustFail(t, c.Update(ctx, r), notGranted)
+
+		r.Spec.Result = nil
+		decide(t, r, v1alpha1.DecisionRefused)
+		r.Spec.Result = &v1alpha1.Result{Outcome: v1alpha1.OutcomeSucceeded}
+		mustFail(t, c.Update(ctx, r), notGranted)
+	})
+
+	t.Run("result is reported once and cannot change", func(t *testing.T) {
+		const fixed = "the result cannot change after it is reported"
+		r := request("result-once")
+		if err := c.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		decide(t, r, v1alpha1.DecisionGranted)
+
+		r.Spec.Result = &v1alpha1.Result{Outcome: "Other"}
+		mustFail(t, c.Update(ctx, r), "spec.result.outcome")
+
+		r.Spec.Result = &v1alpha1.Result{Outcome: v1alpha1.OutcomeFailed, Message: "did not come back"}
+		if err := c.Update(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		var out v1alpha1.ActionRequest
+		if err := c.Get(ctx, client.ObjectKeyFromObject(r), &out); err != nil {
+			t.Fatal(err)
+		}
+		if g, open := out.OpenGrant(); !open || !g.Failed {
+			t.Fatalf("a failed request must keep its grant: open=%v %+v", open, g)
+		}
+
+		// A failure cannot be turned into a success, and cannot be removed.
+		out.Spec.Result.Outcome = v1alpha1.OutcomeSucceeded
+		mustFail(t, c.Update(ctx, &out), fixed)
+		out.Spec.Result = nil
+		mustFail(t, c.Update(ctx, &out), fixed)
 	})
 
 	t.Run("requester cannot write the decision", func(t *testing.T) {
