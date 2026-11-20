@@ -21,6 +21,10 @@ import (
 // writer changed the ledger first.
 const retryAfter = 100 * time.Millisecond
 
+// releaseRetryAfter is the wait before the coordinator looks again for
+// evidence that closes an overdue or failed grant.
+const releaseRetryAfter = 30 * time.Second
+
 // ActionRequestReconciler decides each new request once and writes the
 // answer to its status. It never acts on a target.
 //
@@ -32,6 +36,10 @@ const retryAfter = 100 * time.Millisecond
 //  1. It is added to the ledger of the namespace. The API server accepts
 //     this write only if nobody changed the ledger since it was read.
 //  2. It is written to the status of the request.
+//
+// After a grant the coordinator follows the request. If the grant becomes
+// overdue or is reported as failed, and the contract has release
+// conditions, fresh evidence can close it. See admission.Release.
 //
 // Step 1 is the guard. Two coordinators that decide from the same state
 // cannot both pass it: the second write fails and that request is decided
@@ -54,7 +62,8 @@ type ActionRequestReconciler struct {
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create;update
 // +kubebuilder:rbac:groups="";events.k8s.io,resources=events,verbs=create;patch
 
-// Reconcile decides one request if it has no decision yet.
+// Reconcile decides one request if it has no decision yet, and follows a
+// grant until it is closed.
 //
 // A decision is final. A refused request stays refused; the requester asks
 // again with a new request.
@@ -63,8 +72,11 @@ func (r *ActionRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.Reader.Get(ctx, req.NamespacedName, &ar); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if ar.Status.Decision != "" || !ar.DeletionTimestamp.IsZero() {
+	if !ar.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
+	}
+	if ar.Status.Decision != "" {
+		return r.followGrant(ctx, &ar)
 	}
 
 	// The ledger is read first. Everything read after it is at least as
@@ -114,7 +126,73 @@ func (r *ActionRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, r.writeDecision(ctx, &ar, nil, decidedAt, &deadline)
+	if err := r.writeDecision(ctx, &ar, nil, decidedAt, &deadline); err != nil {
+		return ctrl.Result{}, err
+	}
+	// Look again when the grant is overdue.
+	return ctrl.Result{RequeueAfter: decision.Grant.Deadline.Sub(now) + time.Microsecond}, nil
+}
+
+// followGrant looks at a request that has a decision. It closes an overdue
+// or failed grant if the contract allows that and the evidence is there.
+// Until then it asks to be called again.
+func (r *ActionRequestReconciler) followGrant(ctx context.Context, ar *v1alpha1.ActionRequest) (ctrl.Result, error) {
+	grant, open := ar.OpenGrant()
+	if !open {
+		return ctrl.Result{}, nil
+	}
+	now := r.Now().UTC().Truncate(time.Microsecond)
+
+	if grant.Failed && grant.FailedAt.IsZero() {
+		// Only evidence that is newer than this time can close the grant.
+		seenAt := metav1.NewMicroTime(now)
+		ar.Status.FailureSeenAt = &seenAt
+		if err := r.Writer.Status().Update(ctx, ar); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: releaseRetryAfter}, nil
+	}
+	if !grant.Failed && !grant.Overdue(now) {
+		// Nothing to do before the deadline.
+		return ctrl.Result{RequeueAfter: grant.Deadline.Sub(now) + time.Microsecond}, nil
+	}
+
+	contract, reason, err := r.contract(ctx, ar)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if reason != "" {
+		// No contract, no release.
+		return ctrl.Result{RequeueAfter: releaseRetryAfter}, nil
+	}
+	obs, err := r.observations(ctx, ar.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	release := admission.Release(contract.ToAdmission(), grant, obs, now)
+	if !release.Released {
+		return ctrl.Result{RequeueAfter: releaseRetryAfter}, nil
+	}
+
+	ar.Status.Released = &v1alpha1.Release{At: metav1.NewMicroTime(now)}
+	for _, o := range release.Evidence {
+		ar.Status.Released.Evidence = append(ar.Status.Released.Evidence, fmt.Sprintf(
+			"%s=%s for %q from %q, measured at %s",
+			o.Condition, o.Status, o.Subject, o.Source, o.ObservedAt.UTC().Format(time.RFC3339Nano)))
+	}
+	// The update fails if the request changed after it was read, for
+	// example by a late report. The request is then looked at again.
+	if err := r.Writer.Status().Update(ctx, ar); err != nil {
+		return ctrl.Result{}, err
+	}
+	log.FromContext(ctx).Info("released by evidence",
+		"action", ar.Spec.Action,
+		"target", ar.Spec.Target.Name,
+		"requester", ar.Spec.Requester,
+		"failed", grant.Failed,
+		"evidence", ar.Status.Released.Evidence,
+	)
+	return ctrl.Result{}, nil
 }
 
 // ledger returns the ledger of a namespace and creates it if it is missing.
@@ -130,8 +208,8 @@ func (r *ActionRequestReconciler) ledger(ctx context.Context, namespace string) 
 
 // openGrants returns the ledger entries to keep and the open grants.
 //
-// A ledger entry is dropped only when its request is gone or reported
-// success. A grant that is in a request status but not in the ledger is
+// A ledger entry is dropped only when its request is gone, reported
+// success, or was released by evidence. A grant that is in a request status but not in the ledger is
 // counted too and put back, so a lost ledger cannot free a budget.
 func openGrants(ledger *v1alpha1.Ledger, requests []v1alpha1.ActionRequest) ([]v1alpha1.LedgerGrant, []admission.Grant) {
 	byName := make(map[string]*v1alpha1.ActionRequest, len(requests))
@@ -144,7 +222,7 @@ func openGrants(ledger *v1alpha1.Ledger, requests []v1alpha1.ActionRequest) ([]v
 	inLedger := make(map[string]bool, len(ledger.Status.Grants))
 	for _, g := range ledger.Status.Grants {
 		req, ok := byName[g.Request]
-		if !ok || req.UID != g.UID || req.Succeeded() {
+		if !ok || req.UID != g.UID || req.Closed() {
 			continue
 		}
 		inLedger[g.Request] = true
@@ -170,11 +248,26 @@ func openGrants(ledger *v1alpha1.Ledger, requests []v1alpha1.ActionRequest) ([]v
 // decide reads the contract and the observations of the request's namespace
 // and runs the decision core.
 func (r *ActionRequestReconciler) decide(ctx context.Context, ar *v1alpha1.ActionRequest, open []admission.Grant, now time.Time) (admission.Decision, error) {
-	inNamespace := client.InNamespace(ar.Namespace)
-
-	var contracts v1alpha1.ContractList
-	if err := r.Reader.List(ctx, &contracts, inNamespace); err != nil {
+	contract, reason, err := r.contract(ctx, ar)
+	if err != nil {
 		return admission.Decision{}, err
+	}
+	if reason != "" {
+		return admission.Decision{Reasons: []string{reason}}, nil
+	}
+	obs, err := r.observations(ctx, ar.Namespace)
+	if err != nil {
+		return admission.Decision{}, err
+	}
+	return admission.Decide(contract.ToAdmission(), ar.ToAdmission(), obs, open, now), nil
+}
+
+// contract returns the one contract for the request's action in its
+// namespace. If there is not exactly one, it returns the reason.
+func (r *ActionRequestReconciler) contract(ctx context.Context, ar *v1alpha1.ActionRequest) (*v1alpha1.Contract, string, error) {
+	var contracts v1alpha1.ContractList
+	if err := r.Reader.List(ctx, &contracts, client.InNamespace(ar.Namespace)); err != nil {
+		return nil, "", err
 	}
 	var matching []*v1alpha1.Contract
 	for i := range contracts.Items {
@@ -184,23 +277,25 @@ func (r *ActionRequestReconciler) decide(ctx context.Context, ar *v1alpha1.Actio
 	}
 	switch len(matching) {
 	case 0:
-		return refuse("no contract covers action %q in namespace %q", ar.Spec.Action, ar.Namespace), nil
+		return nil, fmt.Sprintf("no contract covers action %q in namespace %q", ar.Spec.Action, ar.Namespace), nil
 	case 1:
+		return matching[0], "", nil
 	default:
 		// With two contracts it is not clear which rules apply.
-		return refuse("%d contracts cover action %q in namespace %q, want exactly one", len(matching), ar.Spec.Action, ar.Namespace), nil
+		return nil, fmt.Sprintf("%d contracts cover action %q in namespace %q, want exactly one", len(matching), ar.Spec.Action, ar.Namespace), nil
 	}
+}
 
+func (r *ActionRequestReconciler) observations(ctx context.Context, namespace string) ([]admission.Observation, error) {
 	var observations v1alpha1.ObservationList
-	if err := r.Reader.List(ctx, &observations, inNamespace); err != nil {
-		return admission.Decision{}, err
+	if err := r.Reader.List(ctx, &observations, client.InNamespace(namespace)); err != nil {
+		return nil, err
 	}
 	obs := make([]admission.Observation, 0, len(observations.Items))
 	for i := range observations.Items {
 		obs = append(obs, observations.Items[i].ToAdmission())
 	}
-
-	return admission.Decide(matching[0].ToAdmission(), ar.ToAdmission(), obs, open, now), nil
+	return obs, nil
 }
 
 // writeDecision writes the answer to the request status. A deadline makes
@@ -228,10 +323,6 @@ func (r *ActionRequestReconciler) writeDecision(ctx context.Context, ar *v1alpha
 		"reasons", ar.Status.Reasons,
 	)
 	return nil
-}
-
-func refuse(format string, args ...any) admission.Decision {
-	return admission.Decision{Reasons: []string{fmt.Sprintf(format, args...)}}
 }
 
 // SetupWithManager registers the reconciler. Requests are decided one at a

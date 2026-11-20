@@ -68,6 +68,10 @@ type Contract struct {
 	// time may be. Such an observation counts as measured now. Zero means
 	// that any time in the future is refused.
 	ClockSkew time.Duration
+	// ReleaseWhen lists the conditions that close a grant without a success
+	// report, when the grant is overdue or reported as failed. Empty means
+	// that only a person closes such a grant. See Release.
+	ReleaseWhen []Requirement
 }
 
 // Target is the thing the action changes.
@@ -90,7 +94,7 @@ type Request struct {
 // A grant stays open until the requester reports success. Passing the
 // deadline does not close it, and a reported failure does not close it: in
 // both cases the target may still be out, so the grant keeps its place in
-// every budget.
+// every budget. Release says when evidence may close such a grant.
 type Grant struct {
 	RequestID string
 	Action    string
@@ -99,6 +103,9 @@ type Grant struct {
 	Deadline  time.Time
 	// Failed is true when the requester reported that the action failed.
 	Failed bool
+	// FailedAt is when the coordinator first saw the failure report. Zero
+	// means that the time is not known.
+	FailedAt time.Time
 }
 
 // Overdue reports if the requester did not report in time.
@@ -171,7 +178,9 @@ func Decide(c Contract, req Request, observations []Observation, open []Grant, n
 	}}
 }
 
-func checkRequirement(r Requirement, skew time.Duration, subject string, observations []Observation, now time.Time, refuse func(string, ...any)) {
+// checkRequirement returns the observation that meets r, or nil after it
+// gave the reason to refuse.
+func checkRequirement(r Requirement, skew time.Duration, subject string, observations []Observation, now time.Time, refuse func(string, ...any)) *Observation {
 	var newest *Observation
 	for i := range observations {
 		o := &observations[i]
@@ -184,7 +193,7 @@ func checkRequirement(r Requirement, skew time.Duration, subject string, observa
 	}
 	if newest == nil {
 		refuse("no observation of %q for %q", r.Condition, subject)
-		return
+		return nil
 	}
 	age := now.Sub(newest.ObservedAt)
 	switch {
@@ -194,7 +203,10 @@ func checkRequirement(r Requirement, skew time.Duration, subject string, observa
 		refuse("observation of %q for %q is %s old, limit is %s", r.Condition, subject, age, r.MaxAge)
 	case newest.Status != True:
 		refuse("%q for %q is %s (from %q)", r.Condition, subject, newest.Status, newest.Source)
+	default:
+		return newest
 	}
+	return nil
 }
 
 func checkBudget(b Budget, target Target, open []Grant, now time.Time, refuse func(string, ...any)) {
@@ -234,4 +246,75 @@ func stateNote(g Grant, now time.Time) string {
 		return ", overdue"
 	}
 	return ""
+}
+
+// ReleaseDecision says if evidence closes a grant.
+type ReleaseDecision struct {
+	Released bool
+	// Reasons lists every check that keeps the grant open.
+	Reasons []string
+	// Evidence holds the observations that closed the grant.
+	Evidence []Observation
+}
+
+// Release reports if evidence closes an open grant that has no success
+// report.
+//
+// Only a grant that is overdue or reported as failed can be released, and
+// only if the contract lists conditions in ReleaseWhen. Each condition must
+// be True and fresh for the target, as for a new request. In addition it
+// must be measured after the grant went wrong: after the deadline for an
+// overdue grant, after the failure report for a failed one. Evidence from
+// before that time says nothing about the target now. The clock skew of the
+// contract is taken off the observation time for this check, so a reporter
+// with a fast clock cannot pass it early.
+//
+// The rule for doubt is the same as in Decide: the grant stays open.
+func Release(c Contract, g Grant, observations []Observation, now time.Time) ReleaseDecision {
+	var reasons []string
+	keep := func(format string, args ...any) {
+		reasons = append(reasons, fmt.Sprintf(format, args...))
+	}
+
+	if len(c.ReleaseWhen) == 0 {
+		keep("contract has no release conditions")
+	}
+	if g.Action != c.Action {
+		keep("contract covers action %q, not %q", c.Action, g.Action)
+	}
+	if c.ClockSkew < 0 {
+		keep("contract has a negative clock skew")
+	}
+
+	var since time.Time
+	switch {
+	case g.Failed && g.FailedAt.IsZero():
+		keep("the time of the failure report is not known")
+	case g.Failed:
+		since = g.FailedAt
+	case g.Overdue(now):
+		since = g.Deadline
+	default:
+		keep("grant is not overdue and not reported as failed")
+	}
+	if len(reasons) > 0 {
+		return ReleaseDecision{Reasons: reasons}
+	}
+
+	var evidence []Observation
+	for _, r := range c.ReleaseWhen {
+		o := checkRequirement(r, c.ClockSkew, g.Target.Name, observations, now, keep)
+		if o == nil {
+			continue
+		}
+		if !o.ObservedAt.Add(-c.ClockSkew).After(since) {
+			keep("observation of %q for %q is not newer than %s, when the grant went wrong", r.Condition, g.Target.Name, since.Format(time.RFC3339))
+			continue
+		}
+		evidence = append(evidence, *o)
+	}
+	if len(reasons) > 0 {
+		return ReleaseDecision{Reasons: reasons}
+	}
+	return ReleaseDecision{Released: true, Evidence: evidence}
 }

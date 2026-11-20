@@ -47,6 +47,19 @@ type ContractSpec struct {
 	// any time in the future is refused.
 	// +optional
 	ClockSkew *metav1.Duration `json:"clockSkew,omitempty"`
+
+	// ReleaseWhen lists the conditions that close a grant without a success
+	// report, when the grant is overdue or reported as failed. Each must be
+	// True, fresh, and measured after the deadline (overdue grant) or after
+	// the failure report (failed grant). Without it, only a person closes
+	// such a grant, by deleting the request.
+	//
+	// Use conditions that show the target is back and the action is over.
+	// A requester must not start the action after the deadline.
+	// +optional
+	// +listType=map
+	// +listMapKey=condition
+	ReleaseWhen []Requirement `json:"releaseWhen,omitempty"`
 }
 
 // Requirement names a condition that must be True and fresh.
@@ -148,6 +161,7 @@ type ObservationList struct {
 // +kubebuilder:printcolumn:name="Decision",type=string,JSONPath=`.status.decision`
 // +kubebuilder:printcolumn:name="Deadline",type=date,JSONPath=`.status.deadline`
 // +kubebuilder:printcolumn:name="Result",type=string,JSONPath=`.spec.result.outcome`
+// +kubebuilder:printcolumn:name="Released",type=date,JSONPath=`.status.released.at`
 // +kubebuilder:validation:XValidation:rule="!has(self.spec.result) || (has(self.status) && has(self.status.decision) && self.status.decision == 'Granted')",message="a result can be reported only for a granted request"
 type ActionRequest struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -188,7 +202,8 @@ const (
 	// OutcomeSucceeded closes the grant: the target is back.
 	OutcomeSucceeded Outcome = "Succeeded"
 	// OutcomeFailed keeps the grant open: the target may still be out.
-	// Deleting the request closes it.
+	// Deleting the request closes it, or evidence if the contract has
+	// release conditions.
 	OutcomeFailed Outcome = "Failed"
 )
 
@@ -241,6 +256,26 @@ type ActionRequestStatus struct {
 	// before it.
 	// +optional
 	Deadline *metav1.MicroTime `json:"deadline,omitempty"`
+
+	// FailureSeenAt is when the coordinator first saw a failure report.
+	// Evidence must be newer than this to release a failed grant.
+	// +optional
+	FailureSeenAt *metav1.MicroTime `json:"failureSeenAt,omitempty"`
+
+	// Released is set when evidence closed the grant without a success
+	// report. The decision stays Granted.
+	// +optional
+	Released *Release `json:"released,omitempty"`
+}
+
+// Release records why a grant was closed without a success report.
+type Release struct {
+	// At is the time the release was decided with.
+	At metav1.MicroTime `json:"at"`
+
+	// Evidence lists the observations that closed the grant.
+	// +listType=atomic
+	Evidence []string `json:"evidence"`
 }
 
 // ActionRequestList is a list of action requests.

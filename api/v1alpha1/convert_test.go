@@ -73,6 +73,9 @@ func TestOpenGrant(t *testing.T) {
 
 	granted := ActionRequestStatus{Decision: DecisionGranted, DecidedAt: &decided, Deadline: &deadline}
 
+	released := granted
+	released.Released = &Release{At: deadline, Evidence: []string{"TargetServing=True"}}
+
 	cases := []struct {
 		name   string
 		status ActionRequestStatus
@@ -87,6 +90,8 @@ func TestOpenGrant(t *testing.T) {
 		{name: "success closes the grant", status: granted, result: &Result{Outcome: OutcomeSucceeded}},
 		{name: "failure keeps the grant open", status: granted, result: &Result{Outcome: OutcomeFailed}, open: true, failed: true},
 		{name: "an unknown outcome keeps the grant open", status: granted, result: &Result{Outcome: "Other"}, open: true, failed: true},
+		{name: "a release closes an overdue grant", status: released},
+		{name: "a release closes a failed grant", status: released, result: &Result{Outcome: OutcomeFailed}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -123,5 +128,25 @@ func TestGrantRoundTrip(t *testing.T) {
 	again := admission.Decide(c, r.ToAdmission(), nil, []admission.Grant{g}, t0.Add(time.Hour))
 	if !again.Granted || !again.Grant.Deadline.Equal(d.Grant.Deadline) {
 		t.Fatalf("a retry must get the same grant, got %+v", again)
+	}
+}
+
+func TestFailureTimeIsInTheGrant(t *testing.T) {
+	decided := metav1.NewMicroTime(t0)
+	deadline := metav1.NewMicroTime(t0.Add(10 * time.Minute))
+	seen := metav1.NewMicroTime(t0.Add(time.Minute))
+
+	r := request()
+	r.Status = ActionRequestStatus{Decision: DecisionGranted, DecidedAt: &decided, Deadline: &deadline, FailureSeenAt: &seen}
+	if g, _ := r.OpenGrant(); !g.FailedAt.IsZero() {
+		t.Fatalf("a grant without a failure report must have no failure time, got %s", g.FailedAt)
+	}
+	r.Spec.Result = &Result{Outcome: OutcomeFailed}
+	if g, _ := r.OpenGrant(); !g.FailedAt.Equal(seen.Time) {
+		t.Fatalf("failure time = %s, want %s", g.FailedAt, seen.Time)
+	}
+	r.Status.FailureSeenAt = nil
+	if g, _ := r.OpenGrant(); !g.Failed || !g.FailedAt.IsZero() {
+		t.Fatalf("want a failed grant without a time, got %+v", g)
 	}
 }

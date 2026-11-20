@@ -21,6 +21,12 @@ func (c *Contract) ToAdmission() admission.Contract {
 			MaxAge:    r.MaxAge.Duration,
 		})
 	}
+	for _, r := range c.Spec.ReleaseWhen {
+		out.ReleaseWhen = append(out.ReleaseWhen, admission.Requirement{
+			Condition: r.Condition,
+			MaxAge:    r.MaxAge.Duration,
+		})
+	}
 	for _, b := range c.Spec.Budgets {
 		out.Budgets = append(out.Budgets, admission.Budget{
 			Label: b.Label,
@@ -55,15 +61,15 @@ func (r *ActionRequest) ToAdmission() admission.Request {
 
 // OpenGrant returns the grant this request holds, if it holds one.
 //
-// A granted request holds its grant until the requester reports success or
-// the request is deleted. A reported failure does not close the grant: the
-// target may still be out.
+// A granted request holds its grant until the requester reports success,
+// evidence releases it, or the request is deleted. A reported failure does
+// not close the grant: the target may still be out.
 func (r *ActionRequest) OpenGrant() (admission.Grant, bool) {
 	s := r.Status
 	if s.Decision != DecisionGranted || s.DecidedAt == nil || s.Deadline == nil {
 		return admission.Grant{}, false
 	}
-	if r.Succeeded() {
+	if r.Closed() {
 		return admission.Grant{}, false
 	}
 	return r.GrantAt(s.DecidedAt.Time, s.Deadline.Time), true
@@ -74,10 +80,16 @@ func (r *ActionRequest) Succeeded() bool {
 	return r.Spec.Result != nil && r.Spec.Result.Outcome == OutcomeSucceeded
 }
 
+// Closed reports if a grant of this request is closed: by a success report
+// or by evidence.
+func (r *ActionRequest) Closed() bool {
+	return r.Succeeded() || r.Status.Released != nil
+}
+
 // GrantAt returns the grant of this request with the given times. The
 // caller must know that the request holds a grant.
 func (r *ActionRequest) GrantAt(grantedAt, deadline time.Time) admission.Grant {
-	return admission.Grant{
+	g := admission.Grant{
 		// Any result that is not a success counts as a failure.
 		Failed:    r.Spec.Result != nil && !r.Succeeded(),
 		RequestID: r.Name,
@@ -86,6 +98,10 @@ func (r *ActionRequest) GrantAt(grantedAt, deadline time.Time) admission.Grant {
 		GrantedAt: grantedAt,
 		Deadline:  deadline,
 	}
+	if g.Failed && r.Status.FailureSeenAt != nil {
+		g.FailedAt = r.Status.FailureSeenAt.Time
+	}
+	return g
 }
 
 func (t Target) toAdmission() admission.Target {

@@ -71,8 +71,22 @@ When the action has ended, the requester reports the result in
 `spec.result`, once:
 
 - `Succeeded` closes the grant. The target's place in the budgets is free.
-- `Failed` keeps the grant open, because the target may still be out. A
-  person closes it by deleting the request.
+- `Failed` keeps the grant open, because the target may still be out.
+
+A grant with a failure report, or with no report after its deadline, is
+closed in one of two ways:
+
+- A person deletes the request.
+- The contract lists conditions in `releaseWhen`, for example "the target
+  serves again". The coordinator closes the grant when each of them is
+  true, fresh, and measured after the grant went wrong: after the deadline,
+  or after the coordinator saw the failure report. An older fact says
+  nothing about the target now. The request status records the release and
+  the facts it used.
+
+Without `releaseWhen` only a person closes such a grant. With it, the
+requester must not start the action after the deadline, because the grant
+may be gone by then.
 
 The coordinator keeps no state of its own. It reads everything from the API
 server at the moment of the decision.
