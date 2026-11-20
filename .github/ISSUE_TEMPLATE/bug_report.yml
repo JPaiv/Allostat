@@ -1,0 +1,35 @@
+name: Bug report
+description: Something gives a wrong decision or does not work
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what did you get?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >-
+        The smallest input that shows it. For a wrong decision, give the
+        contract, the request, the observations and the open grants.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Commit or release, and the Go version.
+    validations:
+      required: true
+  - type: checkboxes
+    id: public
+    attributes:
+      label: This repository is public
+      options:
+        - label: The report has no host names, account IDs or other private data.
+          required: true
