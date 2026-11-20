@@ -47,16 +47,29 @@ contract := admission.Contract{
 decision := admission.Decide(contract, request, observations, openGrants, time.Now())
 ```
 
+`api/v1alpha1` has the Kubernetes resource types, in the API group
+`allostat.io`. The files to install them are in `config/crd`.
+
+| Resource | Written by | What it holds |
+|---|---|---|
+| `Contract` | whoever owns the fleet's rules | required conditions, budgets and grant TTL for one action |
+| `Observation` | the controller that owns the fact | one fact about one target, with its time |
+| `ActionRequest` | the controller that wants to act | the action and the target; the decision is in the status |
+
+A request is judged by the contract in its own namespace that has the same
+action. The requester cannot pick a contract, and its spec cannot change
+after it is created.
+
 ## Planned
 
-- Contracts, observations and requests as Kubernetes custom resources.
 - A controller that runs the decision core and writes each decision to the
   request's status.
+- A way for the requester to report the result, which closes the grant.
 
 ## Development
 
 ```sh
-go test ./...
+make test
 ```
 
 ## License

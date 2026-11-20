@@ -1,0 +1,125 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: actionrequests.allostat.io
+spec:
+  group: allostat.io
+  names:
+    kind: ActionRequest
+    listKind: ActionRequestList
+    plural: actionrequests
+    singular: actionrequest
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.action
+      name: Action
+      type: string
+    - jsonPath: .spec.target.name
+      name: Target
+      type: string
+    - jsonPath: .status.decision
+      name: Decision
+      type: string
+    - jsonPath: .status.deadline
+      name: Deadline
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ActionRequest asks for permission to do one action on one target.
+
+          The requester writes the spec once. The coordinator writes the status.
+          A retry is a read of the same object, so it gets the same answer.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ActionRequestSpec is what the requester wants to do.
+            properties:
+              action:
+                description: Action is the kind of action, for example "restart".
+                minLength: 1
+                type: string
+              requester:
+                description: Requester is the controller that asks and that will do
+                  the action.
+                minLength: 1
+                type: string
+              target:
+                description: Target is the thing the action changes.
+                properties:
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: Labels put the target into the groups that budgets
+                      count.
+                    type: object
+                  name:
+                    description: Name identifies the target. Observations use it as
+                      their subject.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - action
+            - requester
+            - target
+            type: object
+            x-kubernetes-validations:
+            - message: spec cannot change after the request is created
+              rule: self == oldSelf
+          status:
+            description: ActionRequestStatus is the coordinator's answer.
+            properties:
+              deadline:
+                description: |-
+                  Deadline is set for a grant: the requester must finish and report
+                  before it.
+                format: date-time
+                type: string
+              decidedAt:
+                description: DecidedAt is the time the decision was made with.
+                format: date-time
+                type: string
+              decision:
+                description: Decision is empty until the coordinator has answered.
+                enum:
+                - Granted
+                - Refused
+                type: string
+              reasons:
+                description: Reasons lists every failed check of a refusal.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

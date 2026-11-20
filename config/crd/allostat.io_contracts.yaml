@@ -1,0 +1,125 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: contracts.allostat.io
+spec:
+  group: allostat.io
+  names:
+    kind: Contract
+    listKind: ContractList
+    plural: contracts
+    singular: contract
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.action
+      name: Action
+      type: string
+    - jsonPath: .spec.grantTTL
+      name: Grant TTL
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Contract is the agreement for one kind of action in a namespace.
+
+          A request is judged by the contract in its own namespace that has the
+          same action. The requester cannot choose a contract.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ContractSpec says what must hold before an action may start.
+            properties:
+              action:
+                description: |-
+                  Action is the kind of action this contract covers, for example
+                  "restart".
+                minLength: 1
+                type: string
+              budgets:
+                description: Budgets limit how many targets of one group may have
+                  an open grant.
+                items:
+                  description: Budget limits open grants among targets that share
+                    a label value.
+                  properties:
+                    label:
+                      description: |-
+                        Label is the target label that forms the groups. A target without
+                        this label is refused.
+                      minLength: 1
+                      type: string
+                    max:
+                      description: Max is the number of open grants allowed in one
+                        group.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                    value:
+                      description: |-
+                        Value limits the budget to targets with this label value. Targets
+                        with another value are outside this budget.
+                      type: string
+                  required:
+                  - label
+                  - max
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+              grantTTL:
+                description: GrantTTL is how long the requester has to finish and
+                  report.
+                type: string
+              requires:
+                description: |-
+                  Requires lists the conditions that must be True and fresh for the
+                  target.
+                items:
+                  description: Requirement names a condition that must be True and
+                    fresh.
+                  properties:
+                    condition:
+                      description: Condition is the name of the observed fact.
+                      minLength: 1
+                      type: string
+                    maxAge:
+                      description: MaxAge is the oldest observation that still counts.
+                      type: string
+                  required:
+                  - condition
+                  - maxAge
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - condition
+                x-kubernetes-list-type: map
+            required:
+            - action
+            - grantTTL
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}
