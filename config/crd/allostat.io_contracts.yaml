@@ -96,6 +96,35 @@ spec:
                 description: GrantTTL is how long the requester has to finish and
                   report.
                 type: string
+              releaseWhen:
+                description: |-
+                  ReleaseWhen lists the conditions that close a grant without a success
+                  report, when the grant is overdue or reported as failed. Each must be
+                  True, fresh, and measured after the deadline (overdue grant) or after
+                  the failure report (failed grant). Without it, only a person closes
+                  such a grant, by deleting the request.
+
+                  Use conditions that show the target is back and the action is over.
+                  A requester must not start the action after the deadline.
+                items:
+                  description: Requirement names a condition that must be True and
+                    fresh.
+                  properties:
+                    condition:
+                      description: Condition is the name of the observed fact.
+                      minLength: 1
+                      type: string
+                    maxAge:
+                      description: MaxAge is the oldest observation that still counts.
+                      type: string
+                  required:
+                  - condition
+                  - maxAge
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - condition
+                x-kubernetes-list-type: map
               requires:
                 description: |-
                   Requires lists the conditions that must be True and fresh for the

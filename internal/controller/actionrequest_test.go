@@ -111,10 +111,15 @@ func (w *world) contract(name string) {
 // observe reports PeerCanServe for a subject, measured at the world's time.
 func (w *world) observe(subject string, status metav1.ConditionStatus) {
 	w.t.Helper()
+	w.observeCondition("PeerCanServe", subject, status)
+}
+
+func (w *world) observeCondition(condition, subject string, status metav1.ConditionStatus) {
+	w.t.Helper()
 	w.create(&v1alpha1.Observation{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "obs-", Namespace: w.ns},
 		Spec: v1alpha1.ObservationSpec{
-			Condition: "PeerCanServe", Subject: subject, Status: status,
+			Condition: condition, Subject: subject, Status: status,
 			Source: "replica-health", ObservedAt: metav1.NewMicroTime(w.now),
 		},
 	})
@@ -671,5 +676,155 @@ func TestTwoCoordinatorsNeverExceedABudget(t *testing.T) {
 			t.Fatalf("only %d of %d requests were decided in time", decided, shards*perShard)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// releaseContract is the restart contract with a way out of an overdue or
+// failed grant: the target must be seen serving.
+func (w *world) releaseContract() {
+	w.t.Helper()
+	w.create(&v1alpha1.Contract{
+		ObjectMeta: metav1.ObjectMeta{Name: "restart", Namespace: w.ns},
+		Spec: v1alpha1.ContractSpec{
+			Action:      "restart",
+			Requires:    []v1alpha1.Requirement{{Condition: "PeerCanServe", MaxAge: metav1.Duration{Duration: time.Minute}}},
+			Budgets:     []v1alpha1.Budget{{Label: "shard", Max: 1}},
+			GrantTTL:    metav1.Duration{Duration: 10 * time.Minute},
+			ReleaseWhen: []v1alpha1.Requirement{{Condition: "TargetServing", MaxAge: metav1.Duration{Duration: time.Minute}}},
+		},
+	})
+}
+
+func TestEvidenceReleasesAnOverdueGrant(t *testing.T) {
+	w := newWorld(t)
+	w.releaseContract()
+	w.observe("a", metav1.ConditionTrue)
+	// The target was serving before the action. That must not count later.
+	w.observeCondition("TargetServing", "a", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+
+	// Before the deadline nothing is released.
+	w.now = t0.Add(9*time.Minute + 50*time.Second)
+	w.observeCondition("TargetServing", "a", metav1.ConditionTrue)
+	if s := w.reconcile("r1"); s.Released != nil {
+		t.Fatalf("released before the deadline: %+v", s)
+	}
+
+	// Overdue, and the newest evidence is fresh, but it is from before the
+	// deadline.
+	w.now = t0.Add(10*time.Minute + 10*time.Second)
+	if s := w.reconcile("r1"); s.Released != nil {
+		t.Fatalf("released with evidence from before the deadline: %+v", s)
+	}
+	w.observe("b", metav1.ConditionTrue)
+	wantRefused(t, w.ask("r2", "b", "1"), "1 of 1 in use, 1 overdue")
+
+	// Evidence from after the deadline closes the grant.
+	w.observeCondition("TargetServing", "a", metav1.ConditionTrue)
+	s := w.reconcile("r1")
+	wantGranted(t, s)
+	if s.Released == nil || !s.Released.At.Time.Equal(w.now) || len(s.Released.Evidence) != 1 ||
+		!strings.Contains(s.Released.Evidence[0], `TargetServing=True for "a" from "replica-health"`) {
+		t.Fatalf("want a release with its evidence, got %+v", s.Released)
+	}
+	wantGranted(t, w.ask("r3", "b", "1"))
+	if got := strings.Join(w.ledgerRequests(), ","); got != "r3" {
+		t.Fatalf("ledger has %q, want only r3", got)
+	}
+}
+
+func TestEvidenceReleasesAFailedGrant(t *testing.T) {
+	w := newWorld(t)
+	w.releaseContract()
+	w.observe("a", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+
+	// The target is seen serving, then the requester reports a failure.
+	w.now = t0.Add(time.Minute)
+	w.observeCondition("TargetServing", "a", metav1.ConditionTrue)
+	w.report("r1", v1alpha1.OutcomeFailed)
+
+	// The coordinator sees the report later. Evidence from before that
+	// moment does not count.
+	w.now = t0.Add(time.Minute + 10*time.Second)
+	s := w.reconcile("r1")
+	if s.FailureSeenAt == nil || !s.FailureSeenAt.Time.Equal(w.now) || s.Released != nil {
+		t.Fatalf("want only the failure time, got %+v", s)
+	}
+	if s = w.reconcile("r1"); s.Released != nil {
+		t.Fatalf("released with evidence from before the failure report: %+v", s)
+	}
+
+	w.now = t0.Add(time.Minute + 20*time.Second)
+	w.observeCondition("TargetServing", "a", metav1.ConditionFalse)
+	if s = w.reconcile("r1"); s.Released != nil {
+		t.Fatalf("released while the target does not serve: %+v", s)
+	}
+
+	w.now = t0.Add(time.Minute + 30*time.Second)
+	w.observeCondition("TargetServing", "a", metav1.ConditionTrue)
+	s = w.reconcile("r1")
+	if s.Released == nil || !s.FailureSeenAt.Time.Equal(t0.Add(time.Minute+10*time.Second)) {
+		t.Fatalf("want a release and the first failure time, got %+v", s)
+	}
+	w.observe("a", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r2", "a", "1"))
+}
+
+// Without release conditions in the contract, evidence closes nothing.
+func TestNoReleaseWithoutReleaseConditions(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+
+	w.now = t0.Add(time.Hour)
+	w.observeCondition("TargetServing", "a", metav1.ConditionTrue)
+	if s := w.reconcile("r1"); s.Released != nil {
+		t.Fatalf("released without release conditions: %+v", s)
+	}
+	w.report("r1", v1alpha1.OutcomeFailed)
+	w.reconcile("r1")
+	w.now = t0.Add(2 * time.Hour)
+	w.observeCondition("TargetServing", "a", metav1.ConditionTrue)
+	if s := w.reconcile("r1"); s.Released != nil {
+		t.Fatalf("released without release conditions: %+v", s)
+	}
+	w.observe("b", metav1.ConditionTrue)
+	wantRefused(t, w.ask("r2", "b", "1"), "1 of 1 in use, 0 overdue, 1 failed")
+}
+
+// If the contract is gone or doubled, no rules are known and nothing is
+// released.
+func TestNoReleaseWithoutExactlyOneContract(t *testing.T) {
+	w := newWorld(t)
+	w.releaseContract()
+	w.observe("a", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+
+	w.contract("restart-copy")
+	w.now = t0.Add(time.Hour)
+	w.observeCondition("TargetServing", "a", metav1.ConditionTrue)
+	if s := w.reconcile("r1"); s.Released != nil {
+		t.Fatalf("released with two contracts: %+v", s)
+	}
+}
+
+// A success report that arrives late does not change the record of a
+// release that was already written.
+func TestLateSuccessAfterARelease(t *testing.T) {
+	w := newWorld(t)
+	w.releaseContract()
+	w.observe("a", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+
+	w.now = t0.Add(11 * time.Minute)
+	w.observeCondition("TargetServing", "a", metav1.ConditionTrue)
+	if s := w.reconcile("r1"); s.Released == nil {
+		t.Fatalf("want a release, got %+v", s)
+	}
+	w.report("r1", v1alpha1.OutcomeSucceeded)
+	if s := w.reconcile("r1"); s.Released == nil || s.FailureSeenAt != nil {
+		t.Fatalf("the record of the release changed: %+v", s)
 	}
 }

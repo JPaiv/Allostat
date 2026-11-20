@@ -30,6 +30,9 @@ spec:
     - jsonPath: .spec.result.outcome
       name: Result
       type: string
+    - jsonPath: .status.released.at
+      name: Released
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -135,12 +138,37 @@ spec:
                 - Granted
                 - Refused
                 type: string
+              failureSeenAt:
+                description: |-
+                  FailureSeenAt is when the coordinator first saw a failure report.
+                  Evidence must be newer than this to release a failed grant.
+                format: date-time
+                type: string
               reasons:
                 description: Reasons lists every failed check of a refusal.
                 items:
                   type: string
                 type: array
                 x-kubernetes-list-type: atomic
+              released:
+                description: |-
+                  Released is set when evidence closed the grant without a success
+                  report. The decision stays Granted.
+                properties:
+                  at:
+                    description: At is the time the release was decided with.
+                    format: date-time
+                    type: string
+                  evidence:
+                    description: Evidence lists the observations that closed the grant.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - at
+                - evidence
+                type: object
             type: object
         required:
         - spec

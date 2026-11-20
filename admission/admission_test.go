@@ -275,3 +275,174 @@ func TestRetryGetsTheSameGrant(t *testing.T) {
 		t.Fatalf("want the first grant back, got %+v", d)
 	}
 }
+
+func releaseContract() Contract {
+	c := restartContract()
+	c.ReleaseWhen = []Requirement{{Condition: "TargetServing", MaxAge: time.Minute}}
+	return c
+}
+
+func serving(subject string, at time.Time) []Observation {
+	return []Observation{{Condition: "TargetServing", Subject: subject, Status: True, Source: "replica-health", ObservedAt: at}}
+}
+
+func TestReleaseOfAnOverdueGrant(t *testing.T) {
+	a := node("a", "1", "false")
+	deadline := now.Add(-5 * time.Minute)
+	g := openGrant("r1", a, deadline)
+
+	d := Release(releaseContract(), g, serving("a", now.Add(-10*time.Second)), now)
+	if !d.Released || len(d.Evidence) != 1 || d.Evidence[0].Condition != "TargetServing" {
+		t.Fatalf("want a release with the evidence, got %+v", d)
+	}
+}
+
+func TestReleaseOfAFailedGrant(t *testing.T) {
+	a := node("a", "1", "false")
+	// Failed before the deadline: the failure time counts, not the deadline.
+	g := openGrant("r1", a, now.Add(5*time.Minute))
+	g.Failed = true
+	g.FailedAt = now.Add(-30 * time.Second)
+
+	d := Release(releaseContract(), g, serving("a", now.Add(-10*time.Second)), now)
+	if !d.Released {
+		t.Fatalf("want a release, got %q", d.Reasons)
+	}
+}
+
+func TestGrantStaysOpen(t *testing.T) {
+	a := node("a", "1", "false")
+	deadline := now.Add(-5 * time.Minute)
+	overdue := openGrant("r1", a, deadline)
+	fresh := serving("a", now.Add(-10*time.Second))
+
+	failedAt := func(at time.Time) Grant {
+		g := overdue
+		g.Failed = true
+		g.FailedAt = at
+		return g
+	}
+	skewed := releaseContract()
+	skewed.ClockSkew = 30 * time.Second
+
+	cases := []struct {
+		name     string
+		contract Contract
+		grant    Grant
+		obs      []Observation
+		reason   string
+	}{
+		{
+			name:     "contract has no release conditions",
+			contract: restartContract(), grant: overdue, obs: fresh,
+			reason: "contract has no release conditions",
+		},
+		{
+			name:     "grant is in time and has no report",
+			contract: releaseContract(), grant: openGrant("r1", a, now.Add(time.Minute)), obs: fresh,
+			reason: "not overdue and not reported as failed",
+		},
+		{
+			name:     "grant is exactly at its deadline",
+			contract: releaseContract(), grant: openGrant("r1", a, now), obs: fresh,
+			reason: "not overdue and not reported as failed",
+		},
+		{
+			name:     "failure time is not known",
+			contract: releaseContract(), grant: failedAt(time.Time{}), obs: fresh,
+			reason: "time of the failure report is not known",
+		},
+		{
+			name:     "no evidence",
+			contract: releaseContract(), grant: overdue,
+			reason: `no observation of "TargetServing" for "a"`,
+		},
+		{
+			name:     "evidence is for another target",
+			contract: releaseContract(), grant: overdue, obs: serving("b", now.Add(-10*time.Second)),
+			reason: `no observation of "TargetServing" for "a"`,
+		},
+		{
+			name:     "evidence is old",
+			contract: releaseContract(), grant: overdue, obs: serving("a", now.Add(-2*time.Minute)),
+			reason: "2m0s old, limit is 1m0s",
+		},
+		{
+			name:     "evidence is from the future",
+			contract: releaseContract(), grant: overdue, obs: serving("a", now.Add(time.Second)),
+			reason: "from the future",
+		},
+		{
+			name:     "evidence is False",
+			contract: releaseContract(), grant: overdue,
+			obs:    []Observation{{Condition: "TargetServing", Subject: "a", Status: False, Source: "replica-health", ObservedAt: now}},
+			reason: `"TargetServing" for "a" is False`,
+		},
+		{
+			name:     "evidence is Unknown",
+			contract: releaseContract(), grant: overdue,
+			obs:    []Observation{{Condition: "TargetServing", Subject: "a", Status: Unknown, Source: "replica-health", ObservedAt: now}},
+			reason: `"TargetServing" for "a" is Unknown`,
+		},
+		{
+			name:     "a newer False wins over an older True",
+			contract: releaseContract(), grant: overdue,
+			obs: append(serving("a", now.Add(-20*time.Second)),
+				Observation{Condition: "TargetServing", Subject: "a", Status: False, Source: "replica-health", ObservedAt: now.Add(-10 * time.Second)}),
+			reason: `"TargetServing" for "a" is False`,
+		},
+		{
+			name:     "evidence is from before the deadline",
+			contract: releaseContract(), grant: openGrant("r1", a, now.Add(-10*time.Second)), obs: serving("a", now.Add(-20*time.Second)),
+			reason: "is not newer than",
+		},
+		{
+			name:     "evidence is from exactly the deadline",
+			contract: releaseContract(), grant: openGrant("r1", a, now.Add(-10*time.Second)), obs: serving("a", now.Add(-10*time.Second)),
+			reason: "is not newer than",
+		},
+		{
+			name:     "evidence is after the deadline but before the failure report",
+			contract: releaseContract(), grant: failedAt(now.Add(-5 * time.Second)), obs: fresh,
+			reason: "is not newer than",
+		},
+		{
+			name:     "evidence is newer only because of the allowed clock skew",
+			contract: skewed, grant: failedAt(now.Add(-20 * time.Second)), obs: fresh,
+			reason: "is not newer than",
+		},
+		{
+			name:     "contract is for another action",
+			contract: func() Contract { c := releaseContract(); c.Action = "drain"; return c }(), grant: overdue, obs: fresh,
+			reason: `contract covers action "drain", not "restart"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := Release(tc.contract, tc.grant, tc.obs, now)
+			if d.Released || len(d.Evidence) != 0 {
+				t.Fatalf("the grant must stay open, got %+v", d)
+			}
+			if !strings.Contains(strings.Join(d.Reasons, "\n"), tc.reason) {
+				t.Fatalf("reasons %q do not contain %q", d.Reasons, tc.reason)
+			}
+		})
+	}
+}
+
+// Every release condition must hold, not only one.
+func TestReleaseNeedsEveryCondition(t *testing.T) {
+	a := node("a", "1", "false")
+	c := releaseContract()
+	c.ReleaseWhen = append(c.ReleaseWhen, Requirement{Condition: "ReplicationCaughtUp", MaxAge: time.Minute})
+	g := openGrant("r1", a, now.Add(-5*time.Minute))
+	obs := serving("a", now.Add(-10*time.Second))
+
+	if d := Release(c, g, obs, now); d.Released {
+		t.Fatalf("one of two conditions must not release, got %+v", d)
+	}
+	obs = append(obs, Observation{Condition: "ReplicationCaughtUp", Subject: "a", Status: True, Source: "replication", ObservedAt: now})
+	if d := Release(c, g, obs, now); !d.Released || len(d.Evidence) != 2 {
+		t.Fatalf("want a release with two observations, got %+v", d)
+	}
+}
