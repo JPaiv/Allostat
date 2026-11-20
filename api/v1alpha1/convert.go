@@ -12,6 +12,9 @@ func (c *Contract) ToAdmission() admission.Contract {
 		Action:   c.Spec.Action,
 		GrantTTL: c.Spec.GrantTTL.Duration,
 	}
+	if c.Spec.ClockSkew != nil {
+		out.ClockSkew = c.Spec.ClockSkew.Duration
+	}
 	for _, r := range c.Spec.Requires {
 		out.Requires = append(out.Requires, admission.Requirement{
 			Condition: r.Condition,

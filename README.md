@@ -27,6 +27,8 @@ tests if that part can be made explicit and automatic.
   target. The controller that asked does the work and reports the result.
 
 In doubt the answer is no. Missing, old or unclear facts never give a grant.
+A fact with a time in the future is refused too, unless the contract allows
+a small clock difference between the reporter and the coordinator.
 A grant stays open until its result is reported, also after its deadline,
 because the target may still be out.
 

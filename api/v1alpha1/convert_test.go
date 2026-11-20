@@ -14,16 +14,18 @@ var t0 = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 func TestContractToAdmission(t *testing.T) {
 	c := Contract{Spec: ContractSpec{
-		Action:   "restart",
-		Requires: []Requirement{{Condition: "PeerCanServe", MaxAge: metav1.Duration{Duration: time.Minute}}},
-		Budgets:  []Budget{{Label: "shard", Max: 1}, {Label: "gated", Value: "true", Max: 2}},
-		GrantTTL: metav1.Duration{Duration: 10 * time.Minute},
+		Action:    "restart",
+		Requires:  []Requirement{{Condition: "PeerCanServe", MaxAge: metav1.Duration{Duration: time.Minute}}},
+		Budgets:   []Budget{{Label: "shard", Max: 1}, {Label: "gated", Value: "true", Max: 2}},
+		GrantTTL:  metav1.Duration{Duration: 10 * time.Minute},
+		ClockSkew: &metav1.Duration{Duration: 2 * time.Second},
 	}}
 	want := admission.Contract{
-		Action:   "restart",
-		Requires: []admission.Requirement{{Condition: "PeerCanServe", MaxAge: time.Minute}},
-		Budgets:  []admission.Budget{{Label: "shard", Max: 1}, {Label: "gated", Value: "true", Max: 2}},
-		GrantTTL: 10 * time.Minute,
+		Action:    "restart",
+		Requires:  []admission.Requirement{{Condition: "PeerCanServe", MaxAge: time.Minute}},
+		Budgets:   []admission.Budget{{Label: "shard", Max: 1}, {Label: "gated", Value: "true", Max: 2}},
+		GrantTTL:  10 * time.Minute,
+		ClockSkew: 2 * time.Second,
 	}
 	if got := c.ToAdmission(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)

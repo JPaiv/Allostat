@@ -86,6 +86,12 @@ spec:
                   type: object
                 type: array
                 x-kubernetes-list-type: atomic
+              clockSkew:
+                description: |-
+                  ClockSkew is how far ahead of the coordinator's clock an observation
+                  time may be. Such an observation counts as measured now. Without it,
+                  any time in the future is refused.
+                type: string
               grantTTL:
                 description: GrantTTL is how long the requester has to finish and
                   report.

@@ -112,7 +112,28 @@ func TestRefusals(t *testing.T) {
 		{
 			name: "observation from the future", contract: restartContract(), req: request("r1", a),
 			obs:  replace(healthy("a"), "PeerCanServe", func(o *Observation) { o.ObservedAt = now.Add(time.Minute) }),
-			want: "from the future",
+			want: "from the future (1m0s ahead, limit is 0s)",
+		},
+		{
+			name: "observation ahead by more than the clock skew",
+			contract: func() Contract {
+				c := restartContract()
+				c.ClockSkew = 2 * time.Second
+				return c
+			}(),
+			req:  request("r1", a),
+			obs:  replace(healthy("a"), "PeerCanServe", func(o *Observation) { o.ObservedAt = now.Add(2*time.Second + time.Millisecond) }),
+			want: "from the future (2.001s ahead, limit is 2s)",
+		},
+		{
+			name: "negative clock skew",
+			contract: func() Contract {
+				c := restartContract()
+				c.ClockSkew = -time.Second
+				return c
+			}(),
+			req: request("r1", a), obs: healthy("a"),
+			want: "negative clock skew",
 		},
 		{
 			name: "newest observation wins over an older good one", contract: restartContract(), req: request("r1", a),
@@ -205,6 +226,34 @@ func TestRefusals(t *testing.T) {
 			t.Fatalf("want grant, got %q", d.Reasons)
 		}
 	})
+}
+
+func TestObservationWithinTheClockSkewCounts(t *testing.T) {
+	a := node("a", "1", "false")
+	c := restartContract()
+	c.ClockSkew = 2 * time.Second
+	obs := healthy("a")
+	obs[0].ObservedAt = now.Add(2 * time.Second) // exactly at the limit
+
+	d := Decide(c, request("r1", a), obs, nil, now)
+	if !d.Granted {
+		t.Fatalf("want grant, got %q", d.Reasons)
+	}
+}
+
+// The clock skew is only for times in the future. It must not make an old
+// observation count for longer.
+func TestClockSkewDoesNotExtendMaxAge(t *testing.T) {
+	a := node("a", "1", "false")
+	c := restartContract()
+	c.ClockSkew = time.Hour
+	obs := healthy("a")
+	obs[0].ObservedAt = now.Add(-time.Minute - time.Second)
+
+	d := Decide(c, request("r1", a), obs, nil, now)
+	if d.Granted || !strings.Contains(strings.Join(d.Reasons, "\n"), "1m1s old, limit is 1m0s") {
+		t.Fatalf("want a refusal for an old observation, got %+v", d)
+	}
 }
 
 func TestRefusalListsEveryReason(t *testing.T) {

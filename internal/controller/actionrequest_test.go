@@ -193,6 +193,28 @@ func TestRefuseWithOldOrBadEvidence(t *testing.T) {
 	wantRefused(t, w.ask("r2", "b", "2"), `"PeerCanServe" for "b" is False`)
 }
 
+func TestClockSkewOfTheContractIsUsed(t *testing.T) {
+	w := newWorld(t)
+	w.create(&v1alpha1.Contract{
+		ObjectMeta: metav1.ObjectMeta{Name: "restart", Namespace: w.ns},
+		Spec: v1alpha1.ContractSpec{
+			Action:    "restart",
+			Requires:  []v1alpha1.Requirement{{Condition: "PeerCanServe", MaxAge: metav1.Duration{Duration: time.Minute}}},
+			GrantTTL:  metav1.Duration{Duration: 10 * time.Minute},
+			ClockSkew: &metav1.Duration{Duration: 2 * time.Second},
+		},
+	})
+	// The reporter's clock is ahead of the coordinator's clock.
+	w.now = t0.Add(time.Second)
+	w.observe("a", metav1.ConditionTrue)
+	w.now = t0.Add(5 * time.Second)
+	w.observe("b", metav1.ConditionTrue)
+	w.now = t0
+
+	wantGranted(t, w.ask("r1", "a", "1"))
+	wantRefused(t, w.ask("r2", "b", "2"), "from the future (5s ahead, limit is 2s)")
+}
+
 func TestRefuseWithoutExactlyOneContract(t *testing.T) {
 	w := newWorld(t)
 	w.observe("a", metav1.ConditionTrue)
