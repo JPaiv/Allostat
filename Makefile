@@ -9,6 +9,7 @@ ENVTEST_K8S    = 1.37.0
 generate:
 	$(CONTROLLER_GEN) object paths=./api/...
 	$(CONTROLLER_GEN) crd paths=./api/... output:crd:dir=config/crd
+	$(CONTROLLER_GEN) rbac:roleName=allostat-coordinator paths=./internal/... output:rbac:dir=config/rbac
 
 # Run all tests. This downloads a test API server on the first run.
 test:
