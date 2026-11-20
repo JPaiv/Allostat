@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -16,31 +17,40 @@ import (
 	"github.com/JPaiv/Allostat/api/v1alpha1"
 )
 
+// retryAfter is the wait before a request is decided again after another
+// writer changed the ledger first.
+const retryAfter = 100 * time.Millisecond
+
 // ActionRequestReconciler decides each new request once and writes the
 // answer to its status. It never acts on a target.
 //
 // It keeps no state of its own. Everything a decision uses is read from the
-// API server at the time of the decision.
+// API server at the time of the decision, not from a cache.
 //
-// Two rules keep the budgets correct:
+// A grant is written in two steps:
 //
-//   - Requests are decided one at a time.
-//   - Reads go to the API server, not to a cache. A grant that was written a
-//     moment ago is always seen by the next decision.
+//  1. It is added to the ledger of the namespace. The API server accepts
+//     this write only if nobody changed the ledger since it was read.
+//  2. It is written to the status of the request.
 //
-// Both rules hold only for one running coordinator. Run it with leader
-// election.
+// Step 1 is the guard. Two coordinators that decide from the same state
+// cannot both pass it: the second write fails and that request is decided
+// again, now with the first grant in the ledger. If the coordinator stops
+// between the steps, the next run finds the grant in the ledger and
+// finishes step 2.
 type ActionRequestReconciler struct {
 	// Reader must read from the API server directly.
 	Reader client.Reader
-	// Status writes the decision.
-	Status client.SubResourceWriter
+	// Writer creates the ledger and writes the ledger and request status.
+	Writer client.Client
 	// Now is the clock. It can be replaced in tests.
 	Now func() time.Time
 }
 
 // +kubebuilder:rbac:groups=allostat.io,resources=contracts;observations;actionrequests,verbs=get;list;watch
 // +kubebuilder:rbac:groups=allostat.io,resources=actionrequests/status,verbs=update
+// +kubebuilder:rbac:groups=allostat.io,resources=ledgers,verbs=get;create
+// +kubebuilder:rbac:groups=allostat.io,resources=ledgers/status,verbs=update
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create;update
 // +kubebuilder:rbac:groups="";events.k8s.io,resources=events,verbs=create;patch
 
@@ -57,43 +67,109 @@ func (r *ActionRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// The ledger is read first. Everything read after it is at least as
+	// new, and the ledger write at the end fails if a grant was added in
+	// between.
+	ledger, err := r.ledger(ctx, ar.Namespace)
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return ctrl.Result{RequeueAfter: retryAfter}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	var requests v1alpha1.ActionRequestList
+	if err := r.Reader.List(ctx, &requests, client.InNamespace(ar.Namespace)); err != nil {
+		return ctrl.Result{}, err
+	}
+	kept, open := openGrants(ledger, requests.Items)
+
+	// The ledger already has a grant for this request: an earlier run
+	// stopped before it wrote the status. Finish it.
+	for _, g := range kept {
+		if g.UID == ar.UID {
+			return ctrl.Result{}, r.writeDecision(ctx, &ar, nil, g.GrantedAt, &g.Deadline)
+		}
+	}
+
 	// The API server stores times with microseconds.
 	now := r.Now().UTC().Truncate(time.Microsecond)
-	decision, err := r.decide(ctx, &ar, now)
+	decision, err := r.decide(ctx, &ar, open, now)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-
 	decidedAt := metav1.NewMicroTime(now)
-	ar.Status = v1alpha1.ActionRequestStatus{
-		Decision:  v1alpha1.DecisionRefused,
-		Reasons:   decision.Reasons,
-		DecidedAt: &decidedAt,
+	if !decision.Granted {
+		return ctrl.Result{}, r.writeDecision(ctx, &ar, decision.Reasons, decidedAt, nil)
 	}
-	if decision.Granted {
-		deadline := metav1.NewMicroTime(decision.Grant.Deadline)
-		ar.Status.Decision = v1alpha1.DecisionGranted
-		ar.Status.Deadline = &deadline
-	}
-	// The update fails if the request changed after it was read. The
-	// request is then decided again from fresh data.
-	if err := r.Status.Update(ctx, &ar); err != nil {
+
+	deadline := metav1.NewMicroTime(decision.Grant.Deadline)
+	ledger.Status.Grants = append(kept, v1alpha1.LedgerGrant{
+		Request: ar.Name, UID: ar.UID, GrantedAt: decidedAt, Deadline: deadline,
+	})
+	if err := r.Writer.Status().Update(ctx, ledger); err != nil {
+		if apierrors.IsConflict(err) {
+			// Another writer changed the ledger. Decide again from fresh data.
+			log.FromContext(ctx).Info("ledger changed during the decision, deciding again")
+			return ctrl.Result{RequeueAfter: retryAfter}, nil
+		}
 		return ctrl.Result{}, err
 	}
-
-	log.FromContext(ctx).Info("decided",
-		"decision", ar.Status.Decision,
-		"action", ar.Spec.Action,
-		"target", ar.Spec.Target.Name,
-		"requester", ar.Spec.Requester,
-		"reasons", ar.Status.Reasons,
-	)
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, r.writeDecision(ctx, &ar, nil, decidedAt, &deadline)
 }
 
-// decide reads the contract, the observations and the open grants of the
-// request's namespace and runs the decision core.
-func (r *ActionRequestReconciler) decide(ctx context.Context, ar *v1alpha1.ActionRequest, now time.Time) (admission.Decision, error) {
+// ledger returns the ledger of a namespace and creates it if it is missing.
+func (r *ActionRequestReconciler) ledger(ctx context.Context, namespace string) (*v1alpha1.Ledger, error) {
+	ledger := &v1alpha1.Ledger{}
+	err := r.Reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: v1alpha1.LedgerName}, ledger)
+	if apierrors.IsNotFound(err) {
+		ledger = &v1alpha1.Ledger{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: v1alpha1.LedgerName}}
+		err = r.Writer.Create(ctx, ledger)
+	}
+	return ledger, err
+}
+
+// openGrants returns the ledger entries to keep and the open grants.
+//
+// A ledger entry is dropped only when its request is gone or reported
+// success. A grant that is in a request status but not in the ledger is
+// counted too and put back, so a lost ledger cannot free a budget.
+func openGrants(ledger *v1alpha1.Ledger, requests []v1alpha1.ActionRequest) ([]v1alpha1.LedgerGrant, []admission.Grant) {
+	byName := make(map[string]*v1alpha1.ActionRequest, len(requests))
+	for i := range requests {
+		byName[requests[i].Name] = &requests[i]
+	}
+
+	var kept []v1alpha1.LedgerGrant
+	var open []admission.Grant
+	inLedger := make(map[string]bool, len(ledger.Status.Grants))
+	for _, g := range ledger.Status.Grants {
+		req, ok := byName[g.Request]
+		if !ok || req.UID != g.UID || req.Succeeded() {
+			continue
+		}
+		inLedger[g.Request] = true
+		kept = append(kept, g)
+		open = append(open, req.GrantAt(g.GrantedAt.Time, g.Deadline.Time))
+	}
+	for i := range requests {
+		req := &requests[i]
+		if inLedger[req.Name] {
+			continue
+		}
+		if g, ok := req.OpenGrant(); ok {
+			kept = append(kept, v1alpha1.LedgerGrant{
+				Request: req.Name, UID: req.UID,
+				GrantedAt: *req.Status.DecidedAt, Deadline: *req.Status.Deadline,
+			})
+			open = append(open, g)
+		}
+	}
+	return kept, open
+}
+
+// decide reads the contract and the observations of the request's namespace
+// and runs the decision core.
+func (r *ActionRequestReconciler) decide(ctx context.Context, ar *v1alpha1.ActionRequest, open []admission.Grant, now time.Time) (admission.Decision, error) {
 	inNamespace := client.InNamespace(ar.Namespace)
 
 	var contracts v1alpha1.ContractList
@@ -124,18 +200,34 @@ func (r *ActionRequestReconciler) decide(ctx context.Context, ar *v1alpha1.Actio
 		obs = append(obs, observations.Items[i].ToAdmission())
 	}
 
-	var requests v1alpha1.ActionRequestList
-	if err := r.Reader.List(ctx, &requests, inNamespace); err != nil {
-		return admission.Decision{}, err
-	}
-	var open []admission.Grant
-	for i := range requests.Items {
-		if g, ok := requests.Items[i].OpenGrant(); ok {
-			open = append(open, g)
-		}
-	}
-
 	return admission.Decide(matching[0].ToAdmission(), ar.ToAdmission(), obs, open, now), nil
+}
+
+// writeDecision writes the answer to the request status. A deadline makes
+// it a grant.
+func (r *ActionRequestReconciler) writeDecision(ctx context.Context, ar *v1alpha1.ActionRequest, reasons []string, decidedAt metav1.MicroTime, deadline *metav1.MicroTime) error {
+	ar.Status = v1alpha1.ActionRequestStatus{
+		Decision:  v1alpha1.DecisionRefused,
+		Reasons:   reasons,
+		DecidedAt: &decidedAt,
+	}
+	if deadline != nil {
+		ar.Status.Decision = v1alpha1.DecisionGranted
+		ar.Status.Deadline = deadline
+	}
+	// The update fails if the request changed after it was read. The
+	// request is then looked at again.
+	if err := r.Writer.Status().Update(ctx, ar); err != nil {
+		return err
+	}
+	log.FromContext(ctx).Info("decided",
+		"decision", ar.Status.Decision,
+		"action", ar.Spec.Action,
+		"target", ar.Spec.Target.Name,
+		"requester", ar.Spec.Requester,
+		"reasons", ar.Status.Reasons,
+	)
+	return nil
 }
 
 func refuse(format string, args ...any) admission.Decision {

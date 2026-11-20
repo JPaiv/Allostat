@@ -55,6 +55,7 @@ decision := admission.Decide(contract, request, observations, openGrants, time.N
 | `Contract` | whoever owns the fleet's rules | required conditions, budgets and grant TTL for one action |
 | `Observation` | the controller that owns the fact | one fact about one target, with its time |
 | `ActionRequest` | the controller that wants to act | the action and the target; the decision is in the status |
+| `Ledger` | the coordinator only | the grants it gave in the namespace that are not closed |
 
 A request is judged by the contract in its own namespace that has the same
 action. The requester cannot pick a contract, and it cannot change the
@@ -71,11 +72,18 @@ When the action has ended, the requester reports the result in
 - `Failed` keeps the grant open, because the target may still be out. A
   person closes it by deleting the request.
 
-The coordinator keeps no state of its own. It decides one request at a time
-and reads everything from the API server at that moment, so a grant that was
-just written always counts for the next decision. Run one coordinator, with
-leader election (the default). The access rules it needs are in
-`config/rbac`.
+The coordinator keeps no state of its own. It reads everything from the API
+server at the moment of the decision.
+
+Every grant is first written to the `Ledger` of the namespace. The API
+server accepts that write only if nobody changed the ledger since it was
+read. Two coordinators that decide from the same state can therefore never
+both give a grant: the second write fails, and that request is decided
+again with the first grant counted. Leader election is still on by default,
+but the budgets do not depend on it.
+
+The access rules the coordinator needs are in `config/rbac`. Nobody else
+should be able to write or delete a ledger.
 
 ## Planned
 
