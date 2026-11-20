@@ -22,9 +22,12 @@ Allostat is early research code. Issues and pull requests are welcome.
 
 ```sh
 gofmt -l .        # must print nothing
-go vet ./...
-go test -race ./...
+make generate     # after a change to the types in api/
+make test         # downloads a test API server on the first run
 ```
+
+The files `api/**/zz_generated.deepcopy.go` and `config/crd/` come from
+`make generate` and are committed. Do not edit them by hand.
 
 ## License
 

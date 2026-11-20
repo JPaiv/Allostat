@@ -1,0 +1,97 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: observations.allostat.io
+spec:
+  group: allostat.io
+  names:
+    kind: Observation
+    listKind: ObservationList
+    plural: observations
+    singular: observation
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.condition
+      name: Condition
+      type: string
+    - jsonPath: .spec.subject
+      name: Subject
+      type: string
+    - jsonPath: .spec.status
+      name: Status
+      type: string
+    - jsonPath: .spec.observedAt
+      name: Observed
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Observation is one fact that a controller reports about a subject.
+
+          The controller that owns the fact writes the whole object. The
+          coordinator only reads it, so the fact is in the spec and there is no
+          status.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ObservationSpec is the reported fact.
+            properties:
+              condition:
+                description: Condition is the name of the fact, for example "PeerCanServe".
+                minLength: 1
+                type: string
+              observedAt:
+                description: |-
+                  ObservedAt is when the source measured the fact, not when it wrote
+                  this object.
+                format: date-time
+                type: string
+              source:
+                description: Source is the controller that reported the fact.
+                minLength: 1
+                type: string
+              status:
+                description: Status is the value of the fact.
+                enum:
+                - "True"
+                - "False"
+                - Unknown
+                type: string
+              subject:
+                description: Subject is the name of the target the fact is about.
+                minLength: 1
+                type: string
+            required:
+            - condition
+            - observedAt
+            - source
+            - status
+            - subject
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

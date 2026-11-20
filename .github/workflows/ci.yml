@@ -22,7 +22,7 @@ jobs:
           go-version-file: go.mod
       - name: Format
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
-      - name: Vet
-        run: go vet ./...
+      - name: Generated files are up to date
+        run: make check
       - name: Test
-        run: go test -race ./...
+        run: make test
