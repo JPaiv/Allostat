@@ -1,6 +1,6 @@
 # Contributing
 
-Homeostat is early research code. Issues and pull requests are welcome.
+Allostat is early research code. Issues and pull requests are welcome.
 
 ## Before you start
 

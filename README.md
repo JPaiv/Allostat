@@ -1,15 +1,19 @@
-# Homeostat
+# Allostat
 
-Homeostat lets independently built infrastructure controllers keep shared
+Allostat lets independently built infrastructure controllers keep shared
 system-level conditions, through operational contracts and coordination.
 
 Status: early research code. Nothing here is ready for production.
+
+The name comes from allostasis: staying stable by changing. A fleet is
+never at rest, so the goal is not to hold it still but to let it change
+without breaking. The project was first called Homeostat.
 
 ## The problem
 
 A fleet is run by many controllers: one upgrades nodes, one balances disks,
 one watches replicas. Each is correct by itself. None knows what the others
-are doing, so a person checks all of them before each risky step. Homeostat
+are doing, so a person checks all of them before each risky step. Allostat
 tests if that part can be made explicit and automatic.
 
 ## How it works
