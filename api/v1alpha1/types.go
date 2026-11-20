@@ -132,6 +132,7 @@ type ObservationList struct {
 //
 // The requester writes the spec once. The coordinator writes the status.
 // A retry is a read of the same object, so it gets the same answer.
+// After a grant the requester reports the result, once, in spec.result.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -139,11 +140,14 @@ type ObservationList struct {
 // +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.target.name`
 // +kubebuilder:printcolumn:name="Decision",type=string,JSONPath=`.status.decision`
 // +kubebuilder:printcolumn:name="Deadline",type=date,JSONPath=`.status.deadline`
+// +kubebuilder:printcolumn:name="Result",type=string,JSONPath=`.spec.result.outcome`
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.result) || (has(self.status) && has(self.status.decision) && self.status.decision == 'Granted')",message="a result can be reported only for a granted request"
 type ActionRequest struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec cannot change after the request is created"
+	// +kubebuilder:validation:XValidation:rule="self.action == oldSelf.action && self.requester == oldSelf.requester && self.target == oldSelf.target",message="action, requester and target cannot change after the request is created"
+	// +kubebuilder:validation:XValidation:rule="!has(oldSelf.result) || (has(self.result) && self.result == oldSelf.result)",message="the result cannot change after it is reported"
 	Spec ActionRequestSpec `json:"spec"`
 
 	// +optional
@@ -162,6 +166,33 @@ type ActionRequestSpec struct {
 
 	// Target is the thing the action changes.
 	Target Target `json:"target"`
+
+	// Result is reported by the requester when the action has ended. It can
+	// be set once, and only on a granted request.
+	// +optional
+	Result *Result `json:"result,omitempty"`
+}
+
+// Outcome says how an action ended.
+// +kubebuilder:validation:Enum=Succeeded;Failed
+type Outcome string
+
+const (
+	// OutcomeSucceeded closes the grant: the target is back.
+	OutcomeSucceeded Outcome = "Succeeded"
+	// OutcomeFailed keeps the grant open: the target may still be out.
+	// Deleting the request closes it.
+	OutcomeFailed Outcome = "Failed"
+)
+
+// Result is the requester's report of how the action ended.
+type Result struct {
+	Outcome Outcome `json:"outcome"`
+
+	// Message says what happened, for people.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	Message string `json:"message,omitempty"`
 }
 
 // Target is the thing an action changes.

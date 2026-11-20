@@ -83,15 +83,18 @@ type Request struct {
 
 // Grant is a permission that was given and is not yet reported as finished.
 //
-// A grant stays open until the requester reports the result. Passing the
-// deadline does not close it: the target may still be out, so the grant
-// keeps its place in every budget.
+// A grant stays open until the requester reports success. Passing the
+// deadline does not close it, and a reported failure does not close it: in
+// both cases the target may still be out, so the grant keeps its place in
+// every budget.
 type Grant struct {
 	RequestID string
 	Action    string
 	Target    Target
 	GrantedAt time.Time
 	Deadline  time.Time
+	// Failed is true when the requester reported that the action failed.
+	Failed bool
 }
 
 // Overdue reports if the requester did not report in time.
@@ -138,7 +141,7 @@ func Decide(c Contract, req Request, observations []Observation, open []Grant, n
 
 	for _, g := range open {
 		if g.Target.Name == req.Target.Name {
-			refuse("target %q already has an open grant (request %q)%s", g.Target.Name, g.RequestID, overdueNote(g, now))
+			refuse("target %q already has an open grant (request %q)%s", g.Target.Name, g.RequestID, stateNote(g, now))
 		}
 	}
 
@@ -197,24 +200,30 @@ func checkBudget(b Budget, target Target, open []Grant, now time.Time, refuse fu
 	if b.Value != "" && value != b.Value {
 		return
 	}
-	used := 0
-	overdue := 0
+	used, overdue, failed := 0, 0, 0
 	for _, g := range open {
 		if g.Target.Labels[b.Label] != value {
 			continue
 		}
 		used++
-		if g.Overdue(now) {
+		switch {
+		case g.Failed:
+			failed++
+		case g.Overdue(now):
 			overdue++
 		}
 	}
 	if used >= b.Max {
-		refuse("budget %s=%s is full: %d of %d in use, %d overdue", b.Label, value, used, b.Max, overdue)
+		refuse("budget %s=%s is full: %d of %d in use, %d overdue, %d failed", b.Label, value, used, b.Max, overdue, failed)
 	}
 }
 
-func overdueNote(g Grant, now time.Time) string {
-	if g.Overdue(now) {
+// stateNote says why a grant that should be closed is still open.
+func stateNote(g Grant, now time.Time) string {
+	switch {
+	case g.Failed:
+		return ", reported as failed"
+	case g.Overdue(now):
 		return ", overdue"
 	}
 	return ""

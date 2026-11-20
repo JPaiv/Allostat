@@ -69,23 +69,31 @@ func TestOpenGrant(t *testing.T) {
 	decided := metav1.NewMicroTime(t0)
 	deadline := metav1.NewMicroTime(t0.Add(10 * time.Minute))
 
+	granted := ActionRequestStatus{Decision: DecisionGranted, DecidedAt: &decided, Deadline: &deadline}
+
 	cases := []struct {
 		name   string
 		status ActionRequestStatus
+		result *Result
 		open   bool
+		failed bool
 	}{
-		{"not decided", ActionRequestStatus{}, false},
-		{"refused", ActionRequestStatus{Decision: DecisionRefused, DecidedAt: &decided}, false},
-		{"granted", ActionRequestStatus{Decision: DecisionGranted, DecidedAt: &decided, Deadline: &deadline}, true},
-		{"granted without a deadline is not a grant", ActionRequestStatus{Decision: DecisionGranted, DecidedAt: &decided}, false},
+		{name: "not decided"},
+		{name: "refused", status: ActionRequestStatus{Decision: DecisionRefused, DecidedAt: &decided}},
+		{name: "granted", status: granted, open: true},
+		{name: "granted without a deadline is not a grant", status: ActionRequestStatus{Decision: DecisionGranted, DecidedAt: &decided}},
+		{name: "success closes the grant", status: granted, result: &Result{Outcome: OutcomeSucceeded}},
+		{name: "failure keeps the grant open", status: granted, result: &Result{Outcome: OutcomeFailed}, open: true, failed: true},
+		{name: "an unknown outcome keeps the grant open", status: granted, result: &Result{Outcome: "Other"}, open: true, failed: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := request()
 			r.Status = tc.status
+			r.Spec.Result = tc.result
 			g, open := r.OpenGrant()
-			if open != tc.open {
-				t.Fatalf("open = %v, want %v", open, tc.open)
+			if open != tc.open || g.Failed != tc.failed {
+				t.Fatalf("open = %v, failed = %v; want %v, %v", open, g.Failed, tc.open, tc.failed)
 			}
 			if open && (g.RequestID != "r1" || g.Target.Name != "a" || !g.GrantedAt.Equal(t0) || !g.Deadline.Equal(t0.Add(10*time.Minute))) {
 				t.Fatalf("wrong grant: %+v", g)

@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.deadline
       name: Deadline
       type: date
+    - jsonPath: .spec.result.outcome
+      name: Result
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -35,6 +38,7 @@ spec:
 
           The requester writes the spec once. The coordinator writes the status.
           A retry is a read of the same object, so it gets the same answer.
+          After a grant the requester reports the result, once, in spec.result.
         properties:
           apiVersion:
             description: |-
@@ -65,6 +69,24 @@ spec:
                   the action.
                 minLength: 1
                 type: string
+              result:
+                description: |-
+                  Result is reported by the requester when the action has ended. It can
+                  be set once, and only on a granted request.
+                properties:
+                  message:
+                    description: Message says what happened, for people.
+                    maxLength: 1024
+                    type: string
+                  outcome:
+                    description: Outcome says how an action ended.
+                    enum:
+                    - Succeeded
+                    - Failed
+                    type: string
+                required:
+                - outcome
+                type: object
               target:
                 description: Target is the thing the action changes.
                 properties:
@@ -88,8 +110,12 @@ spec:
             - target
             type: object
             x-kubernetes-validations:
-            - message: spec cannot change after the request is created
-              rule: self == oldSelf
+            - message: action, requester and target cannot change after the request
+                is created
+              rule: self.action == oldSelf.action && self.requester == oldSelf.requester
+                && self.target == oldSelf.target
+            - message: the result cannot change after it is reported
+              rule: '!has(oldSelf.result) || (has(self.result) && self.result == oldSelf.result)'
           status:
             description: ActionRequestStatus is the coordinator's answer.
             properties:
@@ -119,6 +145,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: a result can be reported only for a granted request
+          rule: '!has(self.spec.result) || (has(self.status) && has(self.status.decision)
+            && self.status.decision == ''Granted'')'
     served: true
     storage: true
     subresources:
