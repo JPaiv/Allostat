@@ -41,6 +41,12 @@ type ContractSpec struct {
 
 	// GrantTTL is how long the requester has to finish and report.
 	GrantTTL metav1.Duration `json:"grantTTL"`
+
+	// ClockSkew is how far ahead of the coordinator's clock an observation
+	// time may be. Such an observation counts as measured now. Without it,
+	// any time in the future is refused.
+	// +optional
+	ClockSkew *metav1.Duration `json:"clockSkew,omitempty"`
 }
 
 // Requirement names a condition that must be True and fresh.

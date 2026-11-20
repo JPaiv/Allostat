@@ -64,6 +64,10 @@ type Contract struct {
 	Budgets  []Budget
 	// GrantTTL is how long the requester has to finish and report.
 	GrantTTL time.Duration
+	// ClockSkew is how far ahead of the coordinator's clock an observation
+	// time may be. Such an observation counts as measured now. Zero means
+	// that any time in the future is refused.
+	ClockSkew time.Duration
 }
 
 // Target is the thing the action changes.
@@ -138,6 +142,9 @@ func Decide(c Contract, req Request, observations []Observation, open []Grant, n
 	if c.GrantTTL <= 0 {
 		refuse("contract has no grant TTL")
 	}
+	if c.ClockSkew < 0 {
+		refuse("contract has a negative clock skew")
+	}
 
 	for _, g := range open {
 		if g.Target.Name == req.Target.Name {
@@ -146,7 +153,7 @@ func Decide(c Contract, req Request, observations []Observation, open []Grant, n
 	}
 
 	for _, r := range c.Requires {
-		checkRequirement(r, req.Target.Name, observations, now, refuse)
+		checkRequirement(r, c.ClockSkew, req.Target.Name, observations, now, refuse)
 	}
 	for _, b := range c.Budgets {
 		checkBudget(b, req.Target, open, now, refuse)
@@ -164,7 +171,7 @@ func Decide(c Contract, req Request, observations []Observation, open []Grant, n
 	}}
 }
 
-func checkRequirement(r Requirement, subject string, observations []Observation, now time.Time, refuse func(string, ...any)) {
+func checkRequirement(r Requirement, skew time.Duration, subject string, observations []Observation, now time.Time, refuse func(string, ...any)) {
 	var newest *Observation
 	for i := range observations {
 		o := &observations[i]
@@ -181,8 +188,8 @@ func checkRequirement(r Requirement, subject string, observations []Observation,
 	}
 	age := now.Sub(newest.ObservedAt)
 	switch {
-	case age < 0:
-		refuse("observation of %q for %q is from the future (%s ahead)", r.Condition, subject, -age)
+	case age < -skew:
+		refuse("observation of %q for %q is from the future (%s ahead, limit is %s)", r.Condition, subject, -age, skew)
 	case age > r.MaxAge:
 		refuse("observation of %q for %q is %s old, limit is %s", r.Condition, subject, age, r.MaxAge)
 	case newest.Status != True:
