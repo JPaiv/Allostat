@@ -53,7 +53,7 @@ func main() {
 
 	reconciler := &controller.ActionRequestReconciler{
 		Reader: mgr.GetAPIReader(),
-		Status: mgr.GetClient().Status(),
+		Writer: mgr.GetClient(),
 		Now:    time.Now,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {

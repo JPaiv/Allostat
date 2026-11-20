@@ -26,8 +26,16 @@ rules:
   - allostat.io
   resources:
   - actionrequests/status
+  - ledgers/status
   verbs:
   - update
+- apiGroups:
+  - allostat.io
+  resources:
+  - ledgers
+  verbs:
+  - create
+  - get
 - apiGroups:
   - coordination.k8s.io
   resources:

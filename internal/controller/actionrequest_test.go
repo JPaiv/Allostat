@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -29,7 +31,7 @@ import (
 var (
 	env    *envtest.Environment
 	scheme = runtime.NewScheme()
-	k8s    client.Client
+	k8s    client.WithWatch
 	nsSeq  int
 )
 
@@ -51,7 +53,7 @@ func TestMain(m *testing.M) {
 	}
 	must(clientgoscheme.AddToScheme(scheme))
 	must(v1alpha1.AddToScheme(scheme))
-	k8s, err = client.New(cfg, client.Options{Scheme: scheme})
+	k8s, err = client.NewWithWatch(cfg, client.Options{Scheme: scheme})
 	must(err)
 
 	code := m.Run()
@@ -79,7 +81,7 @@ func newWorld(t *testing.T) *world {
 	w := &world{t: t, ns: fmt.Sprintf("test-%d", nsSeq), now: t0}
 	w.r = &controller.ActionRequestReconciler{
 		Reader: k8s, // the test client has no cache
-		Status: k8s.Status(),
+		Writer: k8s,
 		Now:    func() time.Time { return w.now },
 	}
 	w.create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: w.ns}})
@@ -344,28 +346,7 @@ func TestManagerDecidesNewRequests(t *testing.T) {
 	w.observe("a", metav1.ConditionTrue)
 	w.observe("b", metav1.ConditionTrue)
 
-	mgr, err := ctrl.NewManager(env.Config, ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-		// The test may run more than once in one process.
-		Controller: config.Controller{SkipNameValidation: new(true)},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := &controller.ActionRequestReconciler{Reader: mgr.GetAPIReader(), Status: mgr.GetClient().Status(), Now: time.Now}
-	if err := r.SetupWithManager(mgr); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- mgr.Start(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("manager: %v", err)
-		}
-	})
+	startCoordinator(t)
 
 	for _, target := range []string{"a", "b"} {
 		w.create(&v1alpha1.ActionRequest{
@@ -402,6 +383,270 @@ func TestManagerDecidesNewRequests(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("requests were not decided in time: %d granted, %d refused", granted, refused)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// startCoordinator runs the reconciler under a manager, without leader
+// election, until the test ends.
+func startCoordinator(t *testing.T) {
+	t.Helper()
+	mgr, err := ctrl.NewManager(env.Config, ctrl.Options{
+		Scheme:  scheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+		// Several coordinators run in one test process.
+		Controller: config.Controller{SkipNameValidation: new(true)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &controller.ActionRequestReconciler{Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Now: time.Now}
+	if err := r.SetupWithManager(mgr); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("manager: %v", err)
+		}
+	})
+}
+
+// request creates a request and does not reconcile it.
+func (w *world) request(name, target, shard string) {
+	w.t.Helper()
+	w.create(&v1alpha1.ActionRequest{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: w.ns},
+		Spec: v1alpha1.ActionRequestSpec{
+			Action: "restart", Requester: "upgrade",
+			Target: v1alpha1.Target{Name: target, Labels: map[string]string{"shard": shard}},
+		},
+	})
+}
+
+func (w *world) status(name string) v1alpha1.ActionRequestStatus {
+	w.t.Helper()
+	var out v1alpha1.ActionRequest
+	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: w.ns, Name: name}, &out); err != nil {
+		w.t.Fatal(err)
+	}
+	return out.Status
+}
+
+// ledgerRequests returns the request names in the ledger.
+func (w *world) ledgerRequests() []string {
+	w.t.Helper()
+	var ledger v1alpha1.Ledger
+	key := client.ObjectKey{Namespace: w.ns, Name: v1alpha1.LedgerName}
+	if err := k8s.Get(context.Background(), key, &ledger); err != nil {
+		w.t.Fatal(err)
+	}
+	var names []string
+	for _, g := range ledger.Status.Grants {
+		names = append(names, g.Request)
+	}
+	return names
+}
+
+// withStatusHook returns a reconciler for the world whose status writes go
+// through hook first. If hook returns an error, the write does not happen.
+func (w *world) withStatusHook(hook func(obj client.Object) error) *controller.ActionRequestReconciler {
+	writer := interceptor.NewClient(k8s, interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if err := hook(obj); err != nil {
+				return err
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+	return &controller.ActionRequestReconciler{Reader: k8s, Writer: writer, Now: func() time.Time { return w.now }}
+}
+
+// Two coordinators decide from the same state. The one that writes the
+// ledger second must lose and decide again.
+func TestSecondLedgerWriterDecidesAgain(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	w.observe("b", metav1.ConditionTrue)
+	w.request("r1", "a", "1")
+	w.request("r2", "b", "1")
+
+	// The slow coordinator has decided to grant r1. Before its ledger
+	// write arrives, the other coordinator grants r2 completely.
+	interrupted := false
+	slow := w.withStatusHook(func(obj client.Object) error {
+		if _, isLedger := obj.(*v1alpha1.Ledger); isLedger && !interrupted {
+			interrupted = true
+			wantGranted(t, w.reconcile("r2"))
+		}
+		return nil
+	})
+	key := client.ObjectKey{Namespace: w.ns, Name: "r1"}
+	res, err := slow.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+	if err != nil || res.RequeueAfter == 0 {
+		t.Fatalf("want a retry without an error, got %+v, %v", res, err)
+	}
+	if !interrupted {
+		t.Fatal("the slow coordinator never wrote the ledger")
+	}
+	if s := w.status("r1"); s.Decision != "" {
+		t.Fatalf("r1 must not be decided by the lost write, got %+v", s)
+	}
+
+	if _, err := slow.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatal(err)
+	}
+	wantRefused(t, w.status("r1"), "budget shard=1 is full")
+}
+
+// The coordinator stops after the ledger write and before the status
+// write. The grant must count at once and be finished later, unchanged.
+func TestGrantIsFinishedFromTheLedger(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	w.observe("b", metav1.ConditionTrue)
+	w.request("r1", "a", "1")
+
+	stopped := errors.New("stopped")
+	crashing := w.withStatusHook(func(obj client.Object) error {
+		if _, isRequest := obj.(*v1alpha1.ActionRequest); isRequest {
+			return stopped
+		}
+		return nil
+	})
+	key := client.ObjectKey{Namespace: w.ns, Name: "r1"}
+	if _, err := crashing.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); !errors.Is(err, stopped) {
+		t.Fatalf("want the injected error, got %v", err)
+	}
+	if s := w.status("r1"); s.Decision != "" {
+		t.Fatalf("r1 has a status although the write was stopped: %+v", s)
+	}
+
+	// The grant is only in the ledger, and it already holds the budget.
+	wantRefused(t, w.ask("r2", "b", "1"), "budget shard=1 is full")
+
+	// Much later the coordinator runs again. The grant keeps its times,
+	// and the evidence is not judged again.
+	w.now = t0.Add(time.Hour)
+	s := w.reconcile("r1")
+	wantGranted(t, s)
+	if !s.DecidedAt.Time.Equal(t0) || !s.Deadline.Time.Equal(t0.Add(10*time.Minute)) {
+		t.Fatalf("the grant changed: decided %v, deadline %v", s.DecidedAt, s.Deadline)
+	}
+}
+
+func TestLostLedgerDoesNotFreeTheBudget(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	w.observe("b", metav1.ConditionTrue)
+	w.observe("c", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+
+	ledger := &v1alpha1.Ledger{ObjectMeta: metav1.ObjectMeta{Namespace: w.ns, Name: v1alpha1.LedgerName}}
+	if err := k8s.Delete(context.Background(), ledger); err != nil {
+		t.Fatal(err)
+	}
+	wantRefused(t, w.ask("r2", "b", "1"), "budget shard=1 is full")
+	// The next grant puts the old one back into the new ledger.
+	wantGranted(t, w.ask("r3", "c", "2"))
+	if got := strings.Join(w.ledgerRequests(), ","); got != "r1,r3" {
+		t.Fatalf("ledger has %q, want r1,r3", got)
+	}
+}
+
+func TestLedgerDropsClosedGrants(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	w.observe("b", metav1.ConditionTrue)
+	w.observe("c", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+	wantGranted(t, w.ask("r2", "b", "2"))
+	w.report("r1", v1alpha1.OutcomeSucceeded)
+	if err := k8s.Delete(context.Background(), &v1alpha1.ActionRequest{ObjectMeta: metav1.ObjectMeta{Name: "r2", Namespace: w.ns}}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantGranted(t, w.ask("r3", "c", "3"))
+	if got := strings.Join(w.ledgerRequests(), ","); got != "r3" {
+		t.Fatalf("ledger has %q, want only r3", got)
+	}
+}
+
+// A new request with the name of a deleted one must not inherit its grant.
+func TestSameNameDoesNotInheritAGrant(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+	if err := k8s.Delete(context.Background(), &v1alpha1.ActionRequest{ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: w.ns}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The evidence is old now, so the new r1 must be judged and refused.
+	w.now = t0.Add(time.Hour)
+	wantRefused(t, w.ask("r1", "a", "1"), "old, limit is 1m0s")
+}
+
+// Two coordinators run without leader election against the same requests.
+// No budget may be exceeded.
+func TestTwoCoordinatorsNeverExceedABudget(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.now = time.Now()
+	const shards, perShard = 4, 8
+	for s := 0; s < shards; s++ {
+		for n := 0; n < perShard; n++ {
+			w.observe(fmt.Sprintf("node-%d-%d", s, n), metav1.ConditionTrue)
+		}
+	}
+
+	startCoordinator(t)
+	startCoordinator(t)
+
+	for s := 0; s < shards; s++ {
+		for n := 0; n < perShard; n++ {
+			target := fmt.Sprintf("node-%d-%d", s, n)
+			w.request("req-"+target, target, fmt.Sprint(s))
+		}
+	}
+
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		var list v1alpha1.ActionRequestList
+		if err := k8s.List(context.Background(), &list, client.InNamespace(w.ns)); err != nil {
+			t.Fatal(err)
+		}
+		decided := 0
+		granted := map[string]int{}
+		for _, item := range list.Items {
+			if item.Status.Decision != "" {
+				decided++
+			}
+			if item.Status.Decision == v1alpha1.DecisionGranted {
+				granted[item.Spec.Target.Labels["shard"]]++
+			}
+		}
+		for shard, n := range granted {
+			if n > 1 {
+				t.Fatalf("shard %s has %d grants, budget is 1", shard, n)
+			}
+		}
+		if decided == shards*perShard {
+			if len(granted) != shards {
+				t.Fatalf("want one grant in each of %d shards, got %v", shards, granted)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d requests were decided in time", decided, shards*perShard)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

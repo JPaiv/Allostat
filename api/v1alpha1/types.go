@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // Contract is the agreement for one kind of action in a namespace.
@@ -243,4 +244,54 @@ type ActionRequestList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ActionRequest `json:"items"`
+}
+
+// LedgerName is the name of the one ledger in each namespace.
+const LedgerName = "grants"
+
+// Ledger is the coordinator's list of the grants it gave in a namespace.
+//
+// Every grant is written here first, with a check that nobody else wrote
+// since the ledger was read. Two coordinators can therefore never both give
+// a grant from the same state. Only the coordinator writes it.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+type Ledger struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// +optional
+	Status LedgerStatus `json:"status,omitempty"`
+}
+
+// LedgerStatus holds the grants.
+type LedgerStatus struct {
+	// Grants lists the grants that are not known to be closed.
+	// +optional
+	// +listType=map
+	// +listMapKey=request
+	Grants []LedgerGrant `json:"grants,omitempty"`
+}
+
+// LedgerGrant is one grant in the ledger.
+type LedgerGrant struct {
+	// Request is the name of the action request that holds the grant.
+	Request string `json:"request"`
+
+	// UID is the UID of that request. A new request with the same name
+	// does not inherit the grant.
+	UID types.UID `json:"uid"`
+
+	GrantedAt metav1.MicroTime `json:"grantedAt"`
+	Deadline  metav1.MicroTime `json:"deadline"`
+}
+
+// LedgerList is a list of ledgers.
+//
+// +kubebuilder:object:root=true
+type LedgerList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Ledger `json:"items"`
 }
