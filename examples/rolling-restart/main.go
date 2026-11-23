@@ -188,7 +188,6 @@ func run() error {
 	}
 	coordinator := &controller.ActionRequestReconciler{
 		Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Now: time.Now,
-		ReleaseRetry: time.Second,
 	}
 	if err := coordinator.SetupWithManager(mgr); err != nil {
 		return err

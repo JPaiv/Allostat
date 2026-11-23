@@ -101,6 +101,9 @@ Without `releaseWhen` only a person closes such a grant. With it, the
 requester must not start the action after the deadline, because the grant
 may be gone by then.
 
+The coordinator looks at a stuck grant again when a new observation about
+its target comes in, and at least every 30 seconds (`--release-retry`).
+
 A requester acts only on a grant it has read. No answer means no new
 action, and a request can say until when its requester waits
 (`spec.expiresAt`). See [When there is no answer](docs/no-answer.md).

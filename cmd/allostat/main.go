@@ -38,7 +38,7 @@ func main() {
 		"Make sure only one coordinator decides. Turn this off only for a single local process.")
 	var releaseRetry time.Duration
 	flag.DurationVar(&releaseRetry, "release-retry", controller.DefaultReleaseRetry,
-		"Wait before the coordinator looks again for evidence that closes an overdue or failed grant.")
+		"Longest wait before the coordinator looks again for evidence that closes an overdue or failed grant. A new observation makes it look at once.")
 	zapOptions := zap.Options{}
 	zapOptions.BindFlags(flag.CommandLine)
 	flag.Parse()
