@@ -27,6 +27,7 @@ func addKnownTypes(s *runtime.Scheme) error {
 		&ActionRequest{}, &ActionRequestList{},
 		&Ledger{}, &LedgerList{},
 		&DecisionRecord{}, &DecisionRecordList{},
+		&ReleaseRecord{}, &ReleaseRecordList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil

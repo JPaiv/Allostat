@@ -75,7 +75,7 @@ func (r *ActionRequestReconciler) releaseRetry() time.Duration {
 // +kubebuilder:rbac:groups=allostat.io,resources=actionrequests/status,verbs=update
 // +kubebuilder:rbac:groups=allostat.io,resources=ledgers,verbs=get;create
 // +kubebuilder:rbac:groups=allostat.io,resources=ledgers/status,verbs=update
-// +kubebuilder:rbac:groups=allostat.io,resources=decisionrecords,verbs=create
+// +kubebuilder:rbac:groups=allostat.io,resources=decisionrecords;releaserecords,verbs=create
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create;update
 // +kubebuilder:rbac:groups="";events.k8s.io,resources=events,verbs=create;patch
 
@@ -188,16 +188,29 @@ func (r *ActionRequestReconciler) followGrant(ctx context.Context, ar *v1alpha1.
 		// No contract, no release.
 		return ctrl.Result{RequeueAfter: r.releaseRetry()}, nil
 	}
-	obs, err := r.observations(ctx, ar.Namespace)
-	if err != nil {
+	var observations v1alpha1.ObservationList
+	if err := r.Reader.List(ctx, &observations, client.InNamespace(ar.Namespace)); err != nil {
 		return ctrl.Result{}, err
+	}
+	obs := make([]admission.Observation, 0, len(observations.Items))
+	for i := range observations.Items {
+		obs = append(obs, observations.Items[i].ToAdmission())
 	}
 	release := admission.Release(contract.ToAdmission(), grant, obs, now)
 	if !release.Released {
 		return ctrl.Result{RequeueAfter: r.releaseRetry()}, nil
 	}
 
-	ar.Status.Released = &v1alpha1.Release{At: metav1.NewMicroTime(now)}
+	// The record is written first, as for a decision.
+	record, err := v1alpha1.NewReleaseRecord(ar, contract, grant, observations.Items, now, release.Evidence)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.Writer.Create(ctx, record); err != nil && !apierrors.IsAlreadyExists(err) {
+		return ctrl.Result{}, err
+	}
+
+	ar.Status.Released = &v1alpha1.Release{At: metav1.NewMicroTime(now), Record: record.Name}
 	for _, o := range release.Evidence {
 		ar.Status.Released.Evidence = append(ar.Status.Released.Evidence, fmt.Sprintf(
 			"%s=%s for %q from %q, measured at %s",
@@ -214,6 +227,7 @@ func (r *ActionRequestReconciler) followGrant(ctx context.Context, ar *v1alpha1.
 		"requester", ar.Spec.Requester,
 		"failed", grant.Failed,
 		"evidence", ar.Status.Released.Evidence,
+		"record", record.Name,
 	)
 	return ctrl.Result{}, nil
 }
@@ -318,18 +332,6 @@ func (r *ActionRequestReconciler) contract(ctx context.Context, ar *v1alpha1.Act
 		// With two contracts it is not clear which rules apply.
 		return nil, fmt.Sprintf("%d contracts cover action %q in namespace %q, want exactly one", len(matching), ar.Spec.Action, ar.Namespace), nil
 	}
-}
-
-func (r *ActionRequestReconciler) observations(ctx context.Context, namespace string) ([]admission.Observation, error) {
-	var observations v1alpha1.ObservationList
-	if err := r.Reader.List(ctx, &observations, client.InNamespace(namespace)); err != nil {
-		return nil, err
-	}
-	obs := make([]admission.Observation, 0, len(observations.Items))
-	for i := range observations.Items {
-		obs = append(obs, observations.Items[i].ToAdmission())
-	}
-	return obs, nil
 }
 
 // writeDecision writes the answer to the request status. A deadline makes

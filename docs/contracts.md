@@ -316,7 +316,11 @@ status:
     at: "2026-01-01T12:11:00.000000Z"
     evidence:
       - 'TargetServing=True for "node-e" from "replica-health", measured at 2026-01-01T12:10:58Z'
+    record: restart-node-e-1-5d2e8f1a6c3b
 ```
+
+The release has a record that can be played again. See
+[Decision record](decision-record.md).
 
 Choose release conditions that show the target is back and the action is
 over. Without `releaseWhen`, only a person closes such a grant.

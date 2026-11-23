@@ -182,6 +182,11 @@ spec:
                       type: string
                     type: array
                     x-kubernetes-list-type: atomic
+                  record:
+                    description: |-
+                      Record is the name of the ReleaseRecord that holds what the release
+                      was decided from.
+                    type: string
                 required:
                 - at
                 - evidence

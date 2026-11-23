@@ -111,3 +111,65 @@ type DecisionRecordList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []DecisionRecord `json:"items"`
 }
+
+// ReleaseRecord holds everything one release by evidence was decided
+// from, and the evidence that closed the grant. Played through the
+// decision core again, it gives the same answer.
+//
+// The coordinator writes one before it writes a release, and
+// status.released of the request names it. It is never changed. It is
+// owned by its request and goes away with it.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:printcolumn:name="Request",type=string,JSONPath=`.spec.request.name`
+// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.grant.target.name`
+// +kubebuilder:printcolumn:name="Time",type=date,JSONPath=`.spec.time`
+type ReleaseRecord struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="a release record cannot change"
+	Spec ReleaseRecordSpec `json:"spec"`
+}
+
+// ReleaseRecordSpec is the input and the output of one release.
+type ReleaseRecordSpec struct {
+	// Time is the time the release was decided with.
+	Time metav1.MicroTime `json:"time"`
+
+	// Request names the request that held the grant.
+	Request RecordedRequestRef `json:"request"`
+
+	// Contract is the contract that was used.
+	Contract RecordedContract `json:"contract"`
+
+	// Grant is the grant that was closed, as it was at that time.
+	Grant RecordedGrant `json:"grant"`
+
+	// Observations holds every observation the release could look at:
+	// those about the target for a condition in releaseWhen, in the order
+	// they were read.
+	// +optional
+	// +listType=atomic
+	Observations []ObservationSpec `json:"observations,omitempty"`
+
+	// Evidence holds the observations that closed the grant, one for each
+	// condition in releaseWhen.
+	// +listType=atomic
+	Evidence []ObservationSpec `json:"evidence"`
+}
+
+// RecordedRequestRef names a request in a release record.
+type RecordedRequestRef struct {
+	Name string    `json:"name"`
+	UID  types.UID `json:"uid"`
+}
+
+// ReleaseRecordList is a list of release records.
+//
+// +kubebuilder:object:root=true
+type ReleaseRecordList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []ReleaseRecord `json:"items"`
+}

@@ -33,6 +33,7 @@ rules:
   - allostat.io
   resources:
   - decisionrecords
+  - releaserecords
   verbs:
   - create
 - apiGroups:

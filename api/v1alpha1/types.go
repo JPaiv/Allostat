@@ -290,6 +290,11 @@ type Release struct {
 	// Evidence lists the observations that closed the grant.
 	// +listType=atomic
 	Evidence []string `json:"evidence"`
+
+	// Record is the name of the ReleaseRecord that holds what the release
+	// was decided from.
+	// +optional
+	Record string `json:"record,omitempty"`
 }
 
 // ActionRequestList is a list of action requests.

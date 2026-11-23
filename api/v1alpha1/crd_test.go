@@ -305,6 +305,59 @@ func TestCRDs(t *testing.T) {
 		mustFail(t, c.Update(ctx, changed), "a decision record cannot change")
 	})
 
+	// The release record in the documentation must be accepted as it is
+	// written, and it must replay to the release it shows.
+	t.Run("the release record in docs/decision-record.md is valid and replays", func(t *testing.T) {
+		page, err := os.ReadFile(filepath.Join("..", "..", "docs", "decision-record.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, rest, found := strings.Cut(string(page), "```yaml\napiVersion: allostat.io/v1alpha1\nkind: ReleaseRecord\n")
+		text, _, closed := strings.Cut(rest, "```")
+		if !found || !closed {
+			t.Fatal("the page has no release record example")
+		}
+		rec := &v1alpha1.ReleaseRecord{}
+		if err := yaml.UnmarshalStrict([]byte("apiVersion: allostat.io/v1alpha1\nkind: ReleaseRecord\n"+text), rec); err != nil {
+			t.Fatalf("the example is not a release record: %v", err)
+		}
+		if err := rec.Verify(); err != nil {
+			t.Fatalf("the example does not replay: %v", err)
+		}
+		rec.Namespace = "default"
+		if err := c.Create(ctx, rec, client.FieldValidation("Strict")); err != nil {
+			t.Fatalf("the example is rejected: %v", err)
+		}
+	})
+
+	t.Run("a release record cannot change", func(t *testing.T) {
+		at := time.Now().Truncate(time.Microsecond)
+		seen := v1alpha1.ObservationSpec{
+			Condition: "TargetServing", Subject: "a", Status: metav1.ConditionTrue, Source: "replica-health",
+			ObservedAt: metav1.NewMicroTime(at.Add(-time.Second)),
+		}
+		rec := &v1alpha1.ReleaseRecord{ObjectMeta: meta("r1-ba9876543210"), Spec: v1alpha1.ReleaseRecordSpec{
+			Time:     metav1.NewMicroTime(at),
+			Request:  v1alpha1.RecordedRequestRef{Name: "r1", UID: "uid-1"},
+			Contract: v1alpha1.RecordedContract{Name: "restart", Spec: contract("x").Spec},
+			Grant: v1alpha1.RecordedGrant{
+				Request: "r1", Action: "restart", Target: v1alpha1.Target{Name: "a"},
+				GrantedAt: metav1.NewMicroTime(at.Add(-time.Hour)), Deadline: metav1.NewMicroTime(at.Add(-time.Minute)),
+			},
+			Observations: []v1alpha1.ObservationSpec{seen},
+			Evidence:     []v1alpha1.ObservationSpec{seen},
+		}}
+		if err := c.Create(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+		changed := rec.DeepCopy()
+		changed.Spec.Evidence[0].Source = "someone-else"
+		mustFail(t, c.Update(ctx, changed), "a release record cannot change")
+		changed = rec.DeepCopy()
+		changed.Spec.Grant.Deadline = metav1.NewMicroTime(at)
+		mustFail(t, c.Update(ctx, changed), "a release record cannot change")
+	})
+
 	t.Run("expiresAt cannot change", func(t *testing.T) {
 		const want = "expiresAt cannot change after the request is created"
 		at := metav1.NewTime(time.Now().Add(time.Minute).Truncate(time.Second))
