@@ -259,6 +259,52 @@ func TestCRDs(t *testing.T) {
 		}
 	})
 
+	// The record in the documentation must be accepted as it is written,
+	// and it must replay to the answer it shows.
+	t.Run("the example in docs/decision-record.md is valid and replays", func(t *testing.T) {
+		page, err := os.ReadFile(filepath.Join("..", "..", "docs", "decision-record.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, rest, found := strings.Cut(string(page), "```yaml\n")
+		text, _, closed := strings.Cut(rest, "```")
+		if !found || !closed {
+			t.Fatal("the page has no YAML example")
+		}
+		rec := &v1alpha1.DecisionRecord{}
+		if err := yaml.UnmarshalStrict([]byte(text), rec); err != nil {
+			t.Fatalf("the example is not a decision record: %v", err)
+		}
+		if err := rec.Verify(); err != nil {
+			t.Fatalf("the example does not replay: %v", err)
+		}
+		rec.Namespace = "default"
+		if err := c.Create(ctx, rec, client.FieldValidation("Strict")); err != nil {
+			t.Fatalf("the example is rejected: %v", err)
+		}
+	})
+
+	t.Run("a decision record cannot change", func(t *testing.T) {
+		rec := &v1alpha1.DecisionRecord{ObjectMeta: meta("r1-0123456789ab"), Spec: v1alpha1.DecisionRecordSpec{
+			Time: metav1.NewMicroTime(time.Now().Truncate(time.Microsecond)),
+			Request: v1alpha1.RecordedRequest{
+				Name: "r1", UID: "uid-1", Action: "restart", Requester: "upgrade",
+				Target: v1alpha1.Target{Name: "a", Labels: map[string]string{"shard": "1"}},
+			},
+			Contract: &v1alpha1.RecordedContract{Name: "restart", Spec: contract("x").Spec},
+			Decision: v1alpha1.RecordedDecision{Decision: v1alpha1.DecisionRefused, Reasons: []string{"no observation"}},
+		}}
+		if err := c.Create(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+		changed := rec.DeepCopy()
+		changed.Spec.Decision = v1alpha1.RecordedDecision{Decision: v1alpha1.DecisionGranted}
+		mustFail(t, c.Update(ctx, changed), "a decision record cannot change")
+		changed = rec.DeepCopy()
+		changed.Spec.Request.Target.Labels["shard"] = "2"
+		mustFail(t, c.Update(ctx, changed), "a decision record cannot change")
+	})
+
 	t.Run("expiresAt cannot change", func(t *testing.T) {
 		const want = "expiresAt cannot change after the request is created"
 		at := metav1.NewTime(time.Now().Add(time.Minute).Truncate(time.Second))

@@ -266,6 +266,11 @@ type ActionRequestStatus struct {
 	// +optional
 	Deadline *metav1.MicroTime `json:"deadline,omitempty"`
 
+	// Record is the name of the DecisionRecord this decision was made
+	// from. It is in the same namespace.
+	// +optional
+	Record string `json:"record,omitempty"`
+
 	// FailureSeenAt is when the coordinator first saw a failure report.
 	// Evidence must be newer than this to release a failed grant.
 	// +optional
@@ -335,6 +340,10 @@ type LedgerGrant struct {
 
 	GrantedAt metav1.MicroTime `json:"grantedAt"`
 	Deadline  metav1.MicroTime `json:"deadline"`
+
+	// Record is the name of the DecisionRecord the grant was made from.
+	// +optional
+	Record string `json:"record,omitempty"`
 }
 
 // LedgerList is a list of ledgers.

@@ -261,6 +261,24 @@ func run() error {
 	}
 	say("result", "no shard was ever without a serving node")
 
+	// Every answer has a record. Played again, each must give the same
+	// answer.
+	var requests v1alpha1.ActionRequestList
+	if err := k8s.List(ctx, &requests, client.InNamespace(namespace)); err != nil {
+		return err
+	}
+	for i := range requests.Items {
+		ar := &requests.Items[i]
+		var record v1alpha1.DecisionRecord
+		if err := k8s.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ar.Status.Record}, &record); err != nil {
+			return fmt.Errorf("the record of %s: %w", ar.Name, err)
+		}
+		if err := record.Verify(); err != nil {
+			return fmt.Errorf("the record of %s does not replay: %w", ar.Name, err)
+		}
+	}
+	say("result", "%d decisions were played again from their records, each with the same answer", len(requests.Items))
+
 	cancel()
 	if err := <-coordinatorDone; err != nil {
 		return fmt.Errorf("coordinator: %w", err)

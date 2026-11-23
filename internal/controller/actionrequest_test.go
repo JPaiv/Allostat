@@ -85,7 +85,64 @@ func newWorld(t *testing.T) *world {
 		Now:    func() time.Time { return w.now },
 	}
 	w.create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: w.ns}})
+	// Whatever a test does, every decision it leaves behind must have a
+	// record that gives the same answer when it is played again.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			w.checkRecords()
+		}
+	})
 	return w
+}
+
+// checkRecords looks at every decided request of the world: its status
+// must name a record, the record must be about this request and say what
+// the status says, and a replay of the record must give that answer.
+func (w *world) checkRecords() int {
+	w.t.Helper()
+	ctx := context.Background()
+	var requests v1alpha1.ActionRequestList
+	if err := k8s.List(ctx, &requests, client.InNamespace(w.ns)); err != nil {
+		w.t.Fatal(err)
+	}
+	checked := 0
+	for i := range requests.Items {
+		ar := &requests.Items[i]
+		s := ar.Status
+		if s.Decision == "" {
+			continue
+		}
+		checked++
+		if s.Record == "" {
+			w.t.Errorf("request %q has a decision without a record", ar.Name)
+			continue
+		}
+		var rec v1alpha1.DecisionRecord
+		if err := k8s.Get(ctx, client.ObjectKey{Namespace: w.ns, Name: s.Record}, &rec); err != nil {
+			w.t.Errorf("request %q: record %q: %v", ar.Name, s.Record, err)
+			continue
+		}
+		rs := rec.Spec
+		if rs.Request.Name != ar.Name || rs.Request.UID != ar.UID {
+			w.t.Errorf("record %q is about %q (%s), not %q (%s)", rec.Name, rs.Request.Name, rs.Request.UID, ar.Name, ar.UID)
+		}
+		if len(rec.OwnerReferences) != 1 || rec.OwnerReferences[0].UID != ar.UID {
+			w.t.Errorf("record %q is not owned by its request: %+v", rec.Name, rec.OwnerReferences)
+		}
+		if rs.Decision.Decision != s.Decision || strings.Join(rs.Decision.Reasons, "|") != strings.Join(s.Reasons, "|") {
+			w.t.Errorf("record %q says %s %q, the status says %s %q", rec.Name, rs.Decision.Decision, rs.Decision.Reasons, s.Decision, s.Reasons)
+		}
+		if !rs.Time.Equal(s.DecidedAt) {
+			w.t.Errorf("record %q has the time %s, the status has %s", rec.Name, rs.Time, s.DecidedAt)
+		}
+		if (rs.Decision.Deadline == nil) != (s.Deadline == nil) || (s.Deadline != nil && !rs.Decision.Deadline.Equal(s.Deadline)) {
+			w.t.Errorf("record %q has the deadline %v, the status has %v", rec.Name, rs.Decision.Deadline, s.Deadline)
+		}
+		if err := rec.Verify(); err != nil {
+			w.t.Errorf("record %q does not replay: %v", rec.Name, err)
+		}
+	}
+	return checked
 }
 
 func (w *world) create(obj client.Object) {
