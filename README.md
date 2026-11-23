@@ -69,6 +69,8 @@ telemetry, a lost report, a failed action) and 300 random time lines.
 | `ReleaseRecord` | the coordinator only | everything one release by evidence was decided from, and the evidence |
 
 [Contracts](docs/contracts.md) explains every field, with examples.
+[Messages and what to do](docs/messages.md) lists every refusal reason and
+error, with the next step.
 
 A request is judged by the contract in its own namespace that has the same
 action. The requester cannot pick a contract, and it cannot change the

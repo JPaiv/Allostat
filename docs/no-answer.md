@@ -18,7 +18,8 @@ procedure to the end and reports the result.
 
 1. Create the request. Set `spec.expiresAt` to the time you stop waiting.
 2. Read the request until it has a decision, or until that time.
-3. `Refused`: do not act. The reasons are in the status. Ask again later
+3. `Refused`: do not act. The reasons are in the status;
+   [Messages and what to do](messages.md) explains each. Ask again later
    with a new request; a refusal is final for this one.
 4. `Granted`: act, but start only if there is enough time left before
    `status.deadline`. Do not start after the deadline. Then report the
