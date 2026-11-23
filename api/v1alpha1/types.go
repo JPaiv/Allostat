@@ -168,6 +168,7 @@ type ActionRequest struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// +kubebuilder:validation:XValidation:rule="self.action == oldSelf.action && self.requester == oldSelf.requester && self.target == oldSelf.target",message="action, requester and target cannot change after the request is created"
+	// +kubebuilder:validation:XValidation:rule="has(self.expiresAt) == has(oldSelf.expiresAt) && (!has(self.expiresAt) || self.expiresAt == oldSelf.expiresAt)",message="expiresAt cannot change after the request is created"
 	// +kubebuilder:validation:XValidation:rule="!has(oldSelf.result) || (has(self.result) && self.result == oldSelf.result)",message="the result cannot change after it is reported"
 	Spec ActionRequestSpec `json:"spec"`
 
@@ -187,6 +188,14 @@ type ActionRequestSpec struct {
 
 	// Target is the thing the action changes.
 	Target Target `json:"target"`
+
+	// ExpiresAt is the time after which the requester no longer waits for
+	// an answer. The coordinator refuses a request that it decides at or
+	// after this time. Without it, a request that waits while the
+	// coordinator is down can still get a grant much later; the requester
+	// must then delete a request it gave up on.
+	// +optional
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
 	// Result is reported by the requester when the action has ended. It can
 	// be set once, and only on a granted request.

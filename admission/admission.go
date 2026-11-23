@@ -87,6 +87,10 @@ type Request struct {
 	Action    string
 	Requester string
 	Target    Target
+	// ExpiresAt, if set, is the time after which the requester no longer
+	// waits for an answer. A request that is decided at or after this time
+	// is refused, so a late answer cannot be a grant that nobody uses.
+	ExpiresAt time.Time
 }
 
 // Grant is a permission that was given and is not yet reported as finished.
@@ -148,6 +152,9 @@ func Decide(c Contract, req Request, observations []Observation, open []Grant, n
 	}
 	if c.GrantTTL <= 0 {
 		refuse("contract has no grant TTL")
+	}
+	if !req.ExpiresAt.IsZero() && !now.Before(req.ExpiresAt) {
+		refuse("request expired at %s, before it was decided", req.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	if c.ClockSkew < 0 {
 		refuse("contract has a negative clock skew")

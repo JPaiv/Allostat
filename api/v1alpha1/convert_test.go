@@ -67,6 +67,18 @@ func TestRequestToAdmission(t *testing.T) {
 	}
 }
 
+func TestRequestExpiryToAdmission(t *testing.T) {
+	r := request()
+	if got := r.ToAdmission().ExpiresAt; !got.IsZero() {
+		t.Fatalf("a request without expiresAt must not expire, got %s", got)
+	}
+	at := metav1.NewTime(t0.Add(time.Minute))
+	r.Spec.ExpiresAt = &at
+	if got := r.ToAdmission().ExpiresAt; !got.Equal(at.Time) {
+		t.Fatalf("got %s, want %s", got, at.Time)
+	}
+}
+
 func TestOpenGrant(t *testing.T) {
 	decided := metav1.NewMicroTime(t0)
 	deadline := metav1.NewMicroTime(t0.Add(10 * time.Minute))

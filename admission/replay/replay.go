@@ -236,6 +236,9 @@ func unsafeGrant(c admission.Contract, req admission.Request, observations []adm
 	if c.GrantTTL <= 0 {
 		out = append(out, "the contract has no grant TTL")
 	}
+	if !req.ExpiresAt.IsZero() && !req.ExpiresAt.After(now) {
+		out = append(out, "the request had expired")
+	}
 	for _, r := range c.Requires {
 		if _, why := unproven(r, c.ClockSkew, req.Target.Name, observations, now); why != "" {
 			out = append(out, why)

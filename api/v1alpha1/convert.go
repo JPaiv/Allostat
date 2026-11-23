@@ -51,12 +51,16 @@ func (o *Observation) ToAdmission() admission.Observation {
 // ToAdmission returns the request in the form the decision core uses.
 // The request ID is the object name: a retry reads the same object.
 func (r *ActionRequest) ToAdmission() admission.Request {
-	return admission.Request{
+	out := admission.Request{
 		ID:        r.Name,
 		Action:    r.Spec.Action,
 		Requester: r.Spec.Requester,
 		Target:    r.Spec.Target.toAdmission(),
 	}
+	if r.Spec.ExpiresAt != nil {
+		out.ExpiresAt = r.Spec.ExpiresAt.Time
+	}
+	return out
 }
 
 // OpenGrant returns the grant this request holds, if it holds one.
