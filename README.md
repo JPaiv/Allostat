@@ -49,6 +49,13 @@ contract := admission.Contract{
 decision := admission.Decide(contract, request, observations, openGrants, time.Now())
 ```
 
+`admission/replay` plays a time line of observations, requests and reports
+through the decision core and checks after every step that no unsafe state
+was reached: no budget above its maximum, no grant without fresh evidence,
+no release without evidence from after the grant went wrong. The tests
+play the fault cases (a peer fails during maintenance, disk pressure, old
+telemetry, a lost report, a failed action) and 300 random time lines.
+
 `api/v1alpha1` has the Kubernetes resource types, in the API group
 `allostat.io`. The files to install them are in `config/crd`.
 
