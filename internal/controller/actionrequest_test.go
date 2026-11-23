@@ -1031,3 +1031,52 @@ func TestGrantStaysOpenWhileTheCoordinatorIsAway(t *testing.T) {
 		t.Fatalf("released with evidence from before the deadline: %+v", s)
 	}
 }
+
+// An observation wakes only the requests it can change.
+func TestRequestsToWake(t *testing.T) {
+	decided := metav1.NewMicroTime(t0)
+	deadline := metav1.NewMicroTime(t0.Add(10 * time.Minute))
+	granted := v1alpha1.ActionRequestStatus{Decision: v1alpha1.DecisionGranted, DecidedAt: &decided, Deadline: &deadline}
+	released := granted
+	released.Released = &v1alpha1.Release{At: deadline, Evidence: []string{"x"}}
+
+	req := func(name, target string, status v1alpha1.ActionRequestStatus, result *v1alpha1.Result) v1alpha1.ActionRequest {
+		return v1alpha1.ActionRequest{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "fleet"},
+			Spec:       v1alpha1.ActionRequestSpec{Action: "restart", Requester: "upgrade", Target: v1alpha1.Target{Name: target}, Result: result},
+			Status:     status,
+		}
+	}
+	requests := []v1alpha1.ActionRequest{
+		req("open", "a", granted, nil),
+		req("failed", "a", granted, &v1alpha1.Result{Outcome: v1alpha1.OutcomeFailed}),
+		req("other-target", "b", granted, nil),
+		req("not-decided", "a", v1alpha1.ActionRequestStatus{}, nil),
+		req("refused", "a", v1alpha1.ActionRequestStatus{Decision: v1alpha1.DecisionRefused, DecidedAt: &decided}, nil),
+		req("succeeded", "a", granted, &v1alpha1.Result{Outcome: v1alpha1.OutcomeSucceeded}),
+		req("released", "a", released, nil),
+	}
+	observation := func(status metav1.ConditionStatus) *v1alpha1.Observation {
+		return &v1alpha1.Observation{
+			ObjectMeta: metav1.ObjectMeta{Name: "o", Namespace: "fleet"},
+			Spec:       v1alpha1.ObservationSpec{Condition: "TargetServing", Subject: "a", Status: status, Source: "replica-health", ObservedAt: decided},
+		}
+	}
+
+	var woken []string
+	for _, r := range controller.RequestsToWake(observation(metav1.ConditionTrue), requests) {
+		if r.Namespace != "fleet" {
+			t.Fatalf("wrong namespace: %+v", r)
+		}
+		woken = append(woken, r.Name)
+	}
+	if got := strings.Join(woken, ","); got != "open,failed" {
+		t.Fatalf("woken %q, want open,failed", got)
+	}
+	// Only a True observation can close a grant.
+	for _, status := range []metav1.ConditionStatus{metav1.ConditionFalse, metav1.ConditionUnknown} {
+		if got := controller.RequestsToWake(observation(status), requests); len(got) != 0 {
+			t.Fatalf("a %s observation woke %+v", status, got)
+		}
+	}
+}

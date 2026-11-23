@@ -11,7 +11,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/JPaiv/Allostat/admission"
 	"github.com/JPaiv/Allostat/api/v1alpha1"
@@ -22,7 +24,8 @@ import (
 const retryAfter = 100 * time.Millisecond
 
 // DefaultReleaseRetry is the default wait before the coordinator looks
-// again for evidence that closes an overdue or failed grant.
+// again for evidence that closes an overdue or failed grant. A new
+// observation about the target makes it look before that.
 const DefaultReleaseRetry = 30 * time.Second
 
 // ActionRequestReconciler decides each new request once and writes the
@@ -365,9 +368,48 @@ func (r *ActionRequestReconciler) writeDecision(ctx context.Context, ar *v1alpha
 
 // SetupWithManager registers the reconciler. Requests are decided one at a
 // time.
+//
+// A new observation wakes the requests that hold an open grant for its
+// subject, so evidence closes an overdue or failed grant when it comes in.
+// The retry stays as the fallback for an event that is lost.
 func (r *ActionRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	cached := mgr.GetClient()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.ActionRequest{}).
+		Watches(&v1alpha1.Observation{}, handler.EnqueueRequestsFromMapFunc(
+			func(ctx context.Context, obj client.Object) []reconcile.Request {
+				o, ok := obj.(*v1alpha1.Observation)
+				if !ok {
+					return nil
+				}
+				var requests v1alpha1.ActionRequestList
+				if err := cached.List(ctx, &requests, client.InNamespace(o.Namespace)); err != nil {
+					log.FromContext(ctx).Error(err, "list the requests for an observation", "observation", o.Name)
+					return nil
+				}
+				return RequestsToWake(o, requests.Items)
+			})).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		Complete(r)
+}
+
+// RequestsToWake returns the requests an observation can change: those
+// that hold an open grant for its subject. Only a True observation can
+// close a grant. A request without a decision is not woken; it is decided
+// with the observations that are there when it is read.
+func RequestsToWake(o *v1alpha1.Observation, requests []v1alpha1.ActionRequest) []reconcile.Request {
+	if o.Spec.Status != metav1.ConditionTrue {
+		return nil
+	}
+	var out []reconcile.Request
+	for i := range requests {
+		ar := &requests[i]
+		if ar.Spec.Target.Name != o.Spec.Subject {
+			continue
+		}
+		if _, open := ar.OpenGrant(); open {
+			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(ar)})
+		}
+	}
+	return out
 }
