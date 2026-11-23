@@ -2,22 +2,35 @@ package v1alpha1_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/yaml"
 
 	"github.com/JPaiv/Allostat/api/v1alpha1"
 )
 
 // These tests load the generated CRD files into a real API server and check
 // that it enforces the rules. They need the test binaries: run `make test`.
+// specOf returns the spec of an example, with its result if it has one.
+func specOf(obj *unstructured.Unstructured, hasResult bool, result map[string]any) map[string]any {
+	spec, _, _ := unstructured.NestedMap(obj.Object, "spec")
+	if hasResult {
+		spec["result"] = result
+	}
+	return spec
+}
+
 func TestCRDs(t *testing.T) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS is not set; run `make test`")
@@ -170,6 +183,80 @@ func TestCRDs(t *testing.T) {
 		decide(t, r, v1alpha1.DecisionRefused)
 		r.Spec.Result = &v1alpha1.Result{Outcome: v1alpha1.OutcomeSucceeded}
 		mustFail(t, c.Update(ctx, r), notGranted)
+	})
+
+	// Every example in the contract page must be accepted by the API
+	// server as it is written, with no unknown field.
+	t.Run("the examples in docs/contracts.md are valid", func(t *testing.T) {
+		page, err := os.ReadFile(filepath.Join("..", "..", "docs", "contracts.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocks := strings.Split(string(page), "```yaml\n")[1:]
+		if len(blocks) < 8 {
+			t.Fatalf("found %d examples, want at least 8", len(blocks))
+		}
+		kinds := map[string]int{}
+		for i, block := range blocks {
+			text, _, closed := strings.Cut(block, "```")
+			if !closed {
+				t.Fatalf("example %d is not closed", i+1)
+			}
+			obj := &unstructured.Unstructured{}
+			if err := yaml.UnmarshalStrict([]byte(text), &obj.Object); err != nil {
+				t.Fatalf("example %d is not YAML: %v\n%s", i+1, err, text)
+			}
+			kinds[obj.GetKind()]++
+			obj.SetNamespace("default")
+			what := fmt.Sprintf("example %d (%s %q)", i+1, obj.GetKind(), obj.GetName())
+			strict := client.FieldValidation("Strict")
+
+			// An example can show an object as it is read back. Such an
+			// object is written in the same steps as in real use: the
+			// requester creates it, the coordinator writes the status,
+			// the requester reports the result.
+			status, hasStatus, _ := unstructured.NestedMap(obj.Object, "status")
+			result, hasResult, _ := unstructured.NestedMap(obj.Object, "spec", "result")
+			unstructured.RemoveNestedField(obj.Object, "status")
+			unstructured.RemoveNestedField(obj.Object, "spec", "result")
+			if err := c.Create(ctx, obj, strict); err != nil {
+				t.Fatalf("%s is rejected: %v", what, err)
+			}
+			if hasStatus {
+				if err := unstructured.SetNestedMap(obj.Object, status, "status"); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.Status().Update(ctx, obj, strict); err != nil {
+					t.Fatalf("the status of %s is rejected: %v", what, err)
+				}
+			}
+			if hasResult {
+				if err := unstructured.SetNestedMap(obj.Object, result, "spec", "result"); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.Update(ctx, obj, strict); err != nil {
+					t.Fatalf("the result of %s is rejected: %v", what, err)
+				}
+			}
+
+			// What is stored must be what the page shows.
+			stored := obj.DeepCopy()
+			if err := c.Get(ctx, client.ObjectKeyFromObject(obj), stored); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"spec", "status"} {
+				want, _, _ := unstructured.NestedMap(map[string]any{"spec": specOf(obj, hasResult, result), "status": status}, field)
+				got, _, _ := unstructured.NestedMap(stored.Object, field)
+				if len(want) > 0 && !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s: stored %s is\n%v\nthe page shows\n%v", what, field, got, want)
+				}
+			}
+		}
+		for _, kind := range []string{"Observation", "Contract", "ActionRequest"} {
+			if kinds[kind] == 0 {
+				t.Fatalf("the page has no example of %s", kind)
+			}
+		}
 	})
 
 	t.Run("expiresAt cannot change", func(t *testing.T) {

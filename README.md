@@ -66,6 +66,8 @@ telemetry, a lost report, a failed action) and 300 random time lines.
 | `ActionRequest` | the controller that wants to act | the action and the target; the decision is in the status |
 | `Ledger` | the coordinator only | the grants it gave in the namespace that are not closed |
 
+[Contracts](docs/contracts.md) explains every field, with examples.
+
 A request is judged by the contract in its own namespace that has the same
 action. The requester cannot pick a contract, and it cannot change the
 action or the target after the request is created.
