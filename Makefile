@@ -3,7 +3,7 @@ SETUP_ENVTEST  = go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25
 # Kubernetes version of the API server that the tests start.
 ENVTEST_K8S    = 1.37.0
 
-.PHONY: generate test check
+.PHONY: generate test check example
 
 # Write the deep copy code and the CRD files from the Go types.
 generate:
@@ -19,3 +19,7 @@ test:
 # Fail if the generated files do not match the Go types.
 check: generate
 	git diff --exit-code -- api config
+
+# Run the rolling restart example against a local API server.
+example:
+	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S) -p path)" go run ./examples/rolling-restart

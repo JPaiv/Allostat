@@ -21,9 +21,9 @@ import (
 // writer changed the ledger first.
 const retryAfter = 100 * time.Millisecond
 
-// releaseRetryAfter is the wait before the coordinator looks again for
-// evidence that closes an overdue or failed grant.
-const releaseRetryAfter = 30 * time.Second
+// DefaultReleaseRetry is the default wait before the coordinator looks
+// again for evidence that closes an overdue or failed grant.
+const DefaultReleaseRetry = 30 * time.Second
 
 // ActionRequestReconciler decides each new request once and writes the
 // answer to its status. It never acts on a target.
@@ -53,6 +53,17 @@ type ActionRequestReconciler struct {
 	Writer client.Client
 	// Now is the clock. It can be replaced in tests.
 	Now func() time.Time
+	// ReleaseRetry is the wait before the coordinator looks again for
+	// evidence that closes an overdue or failed grant. Zero means
+	// DefaultReleaseRetry.
+	ReleaseRetry time.Duration
+}
+
+func (r *ActionRequestReconciler) releaseRetry() time.Duration {
+	if r.ReleaseRetry > 0 {
+		return r.ReleaseRetry
+	}
+	return DefaultReleaseRetry
 }
 
 // +kubebuilder:rbac:groups=allostat.io,resources=contracts;observations;actionrequests,verbs=get;list;watch
@@ -150,7 +161,7 @@ func (r *ActionRequestReconciler) followGrant(ctx context.Context, ar *v1alpha1.
 		if err := r.Writer.Status().Update(ctx, ar); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: releaseRetryAfter}, nil
+		return ctrl.Result{RequeueAfter: r.releaseRetry()}, nil
 	}
 	if !grant.Failed && !grant.Overdue(now) {
 		// Nothing to do before the deadline.
@@ -163,7 +174,7 @@ func (r *ActionRequestReconciler) followGrant(ctx context.Context, ar *v1alpha1.
 	}
 	if reason != "" {
 		// No contract, no release.
-		return ctrl.Result{RequeueAfter: releaseRetryAfter}, nil
+		return ctrl.Result{RequeueAfter: r.releaseRetry()}, nil
 	}
 	obs, err := r.observations(ctx, ar.Namespace)
 	if err != nil {
@@ -171,7 +182,7 @@ func (r *ActionRequestReconciler) followGrant(ctx context.Context, ar *v1alpha1.
 	}
 	release := admission.Release(contract.ToAdmission(), grant, obs, now)
 	if !release.Released {
-		return ctrl.Result{RequeueAfter: releaseRetryAfter}, nil
+		return ctrl.Result{RequeueAfter: r.releaseRetry()}, nil
 	}
 
 	ar.Status.Released = &v1alpha1.Release{At: metav1.NewMicroTime(now)}
