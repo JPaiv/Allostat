@@ -162,6 +162,11 @@ spec:
                   type: string
                 type: array
                 x-kubernetes-list-type: atomic
+              record:
+                description: |-
+                  Record is the name of the DecisionRecord this decision was made
+                  from. It is in the same namespace.
+                type: string
               released:
                 description: |-
                   Released is set when evidence closed the grant without a success

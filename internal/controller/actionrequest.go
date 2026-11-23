@@ -31,7 +31,12 @@ const DefaultReleaseRetry = 30 * time.Second
 // It keeps no state of its own. Everything a decision uses is read from the
 // API server at the time of the decision, not from a cache.
 //
-// A grant is written in two steps:
+// Before any answer is written, the coordinator writes a DecisionRecord:
+// everything the decision was made from, and the answer. The request
+// status names the record. A decision therefore never exists without its
+// record.
+//
+// A grant is then written in two steps:
 //
 //  1. It is added to the ledger of the namespace. The API server accepts
 //     this write only if nobody changed the ledger since it was read.
@@ -70,6 +75,7 @@ func (r *ActionRequestReconciler) releaseRetry() time.Duration {
 // +kubebuilder:rbac:groups=allostat.io,resources=actionrequests/status,verbs=update
 // +kubebuilder:rbac:groups=allostat.io,resources=ledgers,verbs=get;create
 // +kubebuilder:rbac:groups=allostat.io,resources=ledgers/status,verbs=update
+// +kubebuilder:rbac:groups=allostat.io,resources=decisionrecords,verbs=create
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create;update
 // +kubebuilder:rbac:groups="";events.k8s.io,resources=events,verbs=create;patch
 
@@ -110,24 +116,30 @@ func (r *ActionRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// stopped before it wrote the status. Finish it.
 	for _, g := range kept {
 		if g.UID == ar.UID {
-			return ctrl.Result{}, r.writeDecision(ctx, &ar, nil, g.GrantedAt, &g.Deadline)
+			return ctrl.Result{}, r.writeDecision(ctx, &ar, nil, g.GrantedAt, &g.Deadline, g.Record)
 		}
 	}
 
 	// The API server stores times with microseconds.
 	now := r.Now().UTC().Truncate(time.Microsecond)
-	decision, err := r.decide(ctx, &ar, open, now)
+	decision, record, err := r.decide(ctx, &ar, open, now)
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// The record is written first. Its name is a hash of its content, so
+	// a record that is already there is this same record.
+	if err := r.Writer.Create(ctx, record); err != nil && !apierrors.IsAlreadyExists(err) {
 		return ctrl.Result{}, err
 	}
 	decidedAt := metav1.NewMicroTime(now)
 	if !decision.Granted {
-		return ctrl.Result{}, r.writeDecision(ctx, &ar, decision.Reasons, decidedAt, nil)
+		return ctrl.Result{}, r.writeDecision(ctx, &ar, decision.Reasons, decidedAt, nil, record.Name)
 	}
 
 	deadline := metav1.NewMicroTime(decision.Grant.Deadline)
 	ledger.Status.Grants = append(kept, v1alpha1.LedgerGrant{
 		Request: ar.Name, UID: ar.UID, GrantedAt: decidedAt, Deadline: deadline,
+		Record: record.Name,
 	})
 	if err := r.Writer.Status().Update(ctx, ledger); err != nil {
 		if apierrors.IsConflict(err) {
@@ -137,7 +149,7 @@ func (r *ActionRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, err
 	}
-	if err := r.writeDecision(ctx, &ar, nil, decidedAt, &deadline); err != nil {
+	if err := r.writeDecision(ctx, &ar, nil, decidedAt, &deadline, record.Name); err != nil {
 		return ctrl.Result{}, err
 	}
 	// Look again when the grant is overdue.
@@ -249,6 +261,7 @@ func openGrants(ledger *v1alpha1.Ledger, requests []v1alpha1.ActionRequest) ([]v
 			kept = append(kept, v1alpha1.LedgerGrant{
 				Request: req.Name, UID: req.UID,
 				GrantedAt: *req.Status.DecidedAt, Deadline: *req.Status.Deadline,
+				Record: req.Status.Record,
 			})
 			open = append(open, g)
 		}
@@ -257,20 +270,30 @@ func openGrants(ledger *v1alpha1.Ledger, requests []v1alpha1.ActionRequest) ([]v
 }
 
 // decide reads the contract and the observations of the request's namespace
-// and runs the decision core.
-func (r *ActionRequestReconciler) decide(ctx context.Context, ar *v1alpha1.ActionRequest, open []admission.Grant, now time.Time) (admission.Decision, error) {
+// and runs the decision core. It returns the answer and its record.
+func (r *ActionRequestReconciler) decide(ctx context.Context, ar *v1alpha1.ActionRequest, open []admission.Grant, now time.Time) (admission.Decision, *v1alpha1.DecisionRecord, error) {
+	var decision admission.Decision
+	var observations v1alpha1.ObservationList
+
 	contract, reason, err := r.contract(ctx, ar)
-	if err != nil {
-		return admission.Decision{}, err
+	switch {
+	case err != nil:
+		return decision, nil, err
+	case reason != "":
+		decision = admission.Decision{Reasons: []string{reason}}
+	default:
+		if err := r.Reader.List(ctx, &observations, client.InNamespace(ar.Namespace)); err != nil {
+			return decision, nil, err
+		}
+		obs := make([]admission.Observation, 0, len(observations.Items))
+		for i := range observations.Items {
+			obs = append(obs, observations.Items[i].ToAdmission())
+		}
+		decision = admission.Decide(contract.ToAdmission(), ar.ToAdmission(), obs, open, now)
 	}
-	if reason != "" {
-		return admission.Decision{Reasons: []string{reason}}, nil
-	}
-	obs, err := r.observations(ctx, ar.Namespace)
-	if err != nil {
-		return admission.Decision{}, err
-	}
-	return admission.Decide(contract.ToAdmission(), ar.ToAdmission(), obs, open, now), nil
+
+	record, err := v1alpha1.NewDecisionRecord(ar, contract, observations.Items, open, now, decision)
+	return decision, record, err
 }
 
 // contract returns the one contract for the request's action in its
@@ -311,11 +334,12 @@ func (r *ActionRequestReconciler) observations(ctx context.Context, namespace st
 
 // writeDecision writes the answer to the request status. A deadline makes
 // it a grant.
-func (r *ActionRequestReconciler) writeDecision(ctx context.Context, ar *v1alpha1.ActionRequest, reasons []string, decidedAt metav1.MicroTime, deadline *metav1.MicroTime) error {
+func (r *ActionRequestReconciler) writeDecision(ctx context.Context, ar *v1alpha1.ActionRequest, reasons []string, decidedAt metav1.MicroTime, deadline *metav1.MicroTime, record string) error {
 	ar.Status = v1alpha1.ActionRequestStatus{
 		Decision:  v1alpha1.DecisionRefused,
 		Reasons:   reasons,
 		DecidedAt: &decidedAt,
+		Record:    record,
 	}
 	if deadline != nil {
 		ar.Status.Decision = v1alpha1.DecisionGranted
@@ -332,6 +356,7 @@ func (r *ActionRequestReconciler) writeDecision(ctx context.Context, ar *v1alpha
 		"target", ar.Spec.Target.Name,
 		"requester", ar.Spec.Requester,
 		"reasons", ar.Status.Reasons,
+		"record", ar.Status.Record,
 	)
 	return nil
 }

@@ -55,6 +55,10 @@ spec:
                     grantedAt:
                       format: date-time
                       type: string
+                    record:
+                      description: Record is the name of the DecisionRecord the grant
+                        was made from.
+                      type: string
                     request:
                       description: Request is the name of the action request that
                         holds the grant.

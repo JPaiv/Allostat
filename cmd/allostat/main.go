@@ -1,8 +1,11 @@
 // Command allostat runs the coordinator.
+//
+// `allostat replay` checks decision records instead; see replay.go.
 package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
@@ -19,6 +22,14 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "replay" {
+		if err := replay(os.Args[2:], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	var metricsAddr, probeAddr string
 	var leaderElect bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address of the metrics endpoint.")

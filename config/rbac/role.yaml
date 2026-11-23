@@ -32,6 +32,12 @@ rules:
 - apiGroups:
   - allostat.io
   resources:
+  - decisionrecords
+  verbs:
+  - create
+- apiGroups:
+  - allostat.io
+  resources:
   - ledgers
   verbs:
   - create

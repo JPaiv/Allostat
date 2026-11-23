@@ -65,6 +65,7 @@ telemetry, a lost report, a failed action) and 300 random time lines.
 | `Observation` | the controller that owns the fact | one fact about one target, with its time |
 | `ActionRequest` | the controller that wants to act | the action and the target; the decision is in the status |
 | `Ledger` | the coordinator only | the grants it gave in the namespace that are not closed |
+| `DecisionRecord` | the coordinator only | everything one decision was made from, and the answer |
 
 [Contracts](docs/contracts.md) explains every field, with examples.
 
@@ -110,6 +111,12 @@ read. Two coordinators that decide from the same state can therefore never
 both give a grant: the second write fails, and that request is decided
 again with the first grant counted. Leader election is still on by default,
 but the budgets do not depend on it.
+
+Before the coordinator writes an answer, it writes a `DecisionRecord`:
+the contract, the request, the observations and the open grants it decided
+from. The status of the request names it. `allostat replay` plays a record
+through the decision core again and reports if the answer differs. See
+[Decision record](docs/decision-record.md).
 
 The access rules the coordinator needs are in `config/rbac`. Nobody else
 should be able to write or delete a ledger.
