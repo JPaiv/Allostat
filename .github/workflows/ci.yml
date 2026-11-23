@@ -26,3 +26,5 @@ jobs:
         run: make check
       - name: Test
         run: make test
+      - name: Example
+        run: make example

@@ -108,14 +108,33 @@ but the budgets do not depend on it.
 The access rules the coordinator needs are in `config/rbac`. Nobody else
 should be able to write or delete a ledger.
 
+## Example
+
+```sh
+make example
+```
+
+This needs only Go. It starts a local API server and runs three parts
+against it: the coordinator, a health reporter, and an upgrade controller
+that wants to restart six nodes in three shards, all at the same time. The
+fleet is a map in memory.
+
+The coordinator lets one node of each shard go and refuses the other until
+the first is back. One upgrade worker stops before it reports; its shard
+is blocked until the node is seen serving after the deadline. The example
+fails if two nodes of one shard were ever out together. The code is in
+`examples/rolling-restart`.
+
 ## Planned
 
-- A container image and an example that runs in a local cluster.
+- A container image and manifests to run the coordinator in a cluster.
 
 ## Development
 
 ```sh
-make test
+make test      # all tests; downloads a test API server on the first run
+make check     # the generated files match the Go types
+make example   # the rolling restart example
 ```
 
 ## License

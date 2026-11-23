@@ -25,6 +25,9 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health endpoints.")
 	flag.BoolVar(&leaderElect, "leader-elect", true,
 		"Make sure only one coordinator decides. Turn this off only for a single local process.")
+	var releaseRetry time.Duration
+	flag.DurationVar(&releaseRetry, "release-retry", controller.DefaultReleaseRetry,
+		"Wait before the coordinator looks again for evidence that closes an overdue or failed grant.")
 	zapOptions := zap.Options{}
 	zapOptions.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -52,9 +55,10 @@ func main() {
 	}
 
 	reconciler := &controller.ActionRequestReconciler{
-		Reader: mgr.GetAPIReader(),
-		Writer: mgr.GetClient(),
-		Now:    time.Now,
+		Reader:       mgr.GetAPIReader(),
+		Writer:       mgr.GetClient(),
+		Now:          time.Now,
+		ReleaseRetry: releaseRetry,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		log.Error(err, "set up the controller")
