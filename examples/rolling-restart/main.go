@@ -279,6 +279,16 @@ func run() error {
 	}
 	say("result", "%d decisions were played again from their records, each with the same answer", len(requests.Items))
 
+	// The release has a record too.
+	var release v1alpha1.ReleaseRecord
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: namespace, Name: lost.Status.Released.Record}, &release); err != nil {
+		return fmt.Errorf("the release record of %s: %w", lost.Name, err)
+	}
+	if err := release.Verify(); err != nil {
+		return fmt.Errorf("the release record of %s does not replay: %w", lost.Name, err)
+	}
+	say("result", "the release of %s was played again from its record, with the same evidence", lostReport)
+
 	cancel()
 	if err := <-coordinatorDone; err != nil {
 		return fmt.Errorf("coordinator: %w", err)

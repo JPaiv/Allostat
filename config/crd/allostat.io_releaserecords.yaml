@@ -1,0 +1,342 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: releaserecords.allostat.io
+spec:
+  group: allostat.io
+  names:
+    kind: ReleaseRecord
+    listKind: ReleaseRecordList
+    plural: releaserecords
+    singular: releaserecord
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.request.name
+      name: Request
+      type: string
+    - jsonPath: .spec.grant.target.name
+      name: Target
+      type: string
+    - jsonPath: .spec.time
+      name: Time
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ReleaseRecord holds everything one release by evidence was decided
+          from, and the evidence that closed the grant. Played through the
+          decision core again, it gives the same answer.
+
+          The coordinator writes one before it writes a release, and
+          status.released of the request names it. It is never changed. It is
+          owned by its request and goes away with it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ReleaseRecordSpec is the input and the output of one release.
+            properties:
+              contract:
+                description: Contract is the contract that was used.
+                properties:
+                  name:
+                    type: string
+                  spec:
+                    description: ContractSpec says what must hold before an action
+                      may start.
+                    properties:
+                      action:
+                        description: |-
+                          Action is the kind of action this contract covers, for example
+                          "restart".
+                        minLength: 1
+                        type: string
+                      budgets:
+                        description: Budgets limit how many targets of one group may
+                          have an open grant.
+                        items:
+                          description: Budget limits open grants among targets that
+                            share a label value.
+                          properties:
+                            label:
+                              description: |-
+                                Label is the target label that forms the groups. A target without
+                                this label is refused.
+                              minLength: 1
+                              type: string
+                            max:
+                              description: Max is the number of open grants allowed
+                                in one group.
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            value:
+                              description: |-
+                                Value limits the budget to targets with this label value. Targets
+                                with another value are outside this budget.
+                              type: string
+                          required:
+                          - label
+                          - max
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      clockSkew:
+                        description: |-
+                          ClockSkew is how far ahead of the coordinator's clock an observation
+                          time may be. Such an observation counts as measured now. Without it,
+                          any time in the future is refused.
+                        type: string
+                      grantTTL:
+                        description: GrantTTL is how long the requester has to finish
+                          and report.
+                        type: string
+                      releaseWhen:
+                        description: |-
+                          ReleaseWhen lists the conditions that close a grant without a success
+                          report, when the grant is overdue or reported as failed. Each must be
+                          True, fresh, and measured after the deadline (overdue grant) or after
+                          the failure report (failed grant). Without it, only a person closes
+                          such a grant, by deleting the request.
+
+                          Use conditions that show the target is back and the action is over.
+                          A requester must not start the action after the deadline.
+                        items:
+                          description: Requirement names a condition that must be
+                            True and fresh.
+                          properties:
+                            condition:
+                              description: Condition is the name of the observed fact.
+                              minLength: 1
+                              type: string
+                            maxAge:
+                              description: MaxAge is the oldest observation that still
+                                counts.
+                              type: string
+                          required:
+                          - condition
+                          - maxAge
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - condition
+                        x-kubernetes-list-type: map
+                      requires:
+                        description: |-
+                          Requires lists the conditions that must be True and fresh for the
+                          target.
+                        items:
+                          description: Requirement names a condition that must be
+                            True and fresh.
+                          properties:
+                            condition:
+                              description: Condition is the name of the observed fact.
+                              minLength: 1
+                              type: string
+                            maxAge:
+                              description: MaxAge is the oldest observation that still
+                                counts.
+                              type: string
+                          required:
+                          - condition
+                          - maxAge
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - condition
+                        x-kubernetes-list-type: map
+                    required:
+                    - action
+                    - grantTTL
+                    type: object
+                required:
+                - name
+                - spec
+                type: object
+              evidence:
+                description: |-
+                  Evidence holds the observations that closed the grant, one for each
+                  condition in releaseWhen.
+                items:
+                  description: ObservationSpec is the reported fact.
+                  properties:
+                    condition:
+                      description: Condition is the name of the fact, for example
+                        "PeerCanServe".
+                      minLength: 1
+                      type: string
+                    observedAt:
+                      description: |-
+                        ObservedAt is when the source measured the fact, not when it wrote
+                        this object.
+                      format: date-time
+                      type: string
+                    source:
+                      description: Source is the controller that reported the fact.
+                      minLength: 1
+                      type: string
+                    status:
+                      description: Status is the value of the fact.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    subject:
+                      description: Subject is the name of the target the fact is about.
+                      minLength: 1
+                      type: string
+                  required:
+                  - condition
+                  - observedAt
+                  - source
+                  - status
+                  - subject
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+              grant:
+                description: Grant is the grant that was closed, as it was at that
+                  time.
+                properties:
+                  action:
+                    type: string
+                  deadline:
+                    format: date-time
+                    type: string
+                  failed:
+                    description: Failed is true when a failure was reported for the
+                      grant.
+                    type: boolean
+                  failedAt:
+                    format: date-time
+                    type: string
+                  grantedAt:
+                    format: date-time
+                    type: string
+                  request:
+                    description: Request is the name of the request that held the
+                      grant.
+                    type: string
+                  target:
+                    description: Target is the thing an action changes.
+                    properties:
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels put the target into the groups that budgets
+                          count.
+                        type: object
+                      name:
+                        description: Name identifies the target. Observations use
+                          it as their subject.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - action
+                - deadline
+                - grantedAt
+                - request
+                - target
+                type: object
+              observations:
+                description: |-
+                  Observations holds every observation the release could look at:
+                  those about the target for a condition in releaseWhen, in the order
+                  they were read.
+                items:
+                  description: ObservationSpec is the reported fact.
+                  properties:
+                    condition:
+                      description: Condition is the name of the fact, for example
+                        "PeerCanServe".
+                      minLength: 1
+                      type: string
+                    observedAt:
+                      description: |-
+                        ObservedAt is when the source measured the fact, not when it wrote
+                        this object.
+                      format: date-time
+                      type: string
+                    source:
+                      description: Source is the controller that reported the fact.
+                      minLength: 1
+                      type: string
+                    status:
+                      description: Status is the value of the fact.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    subject:
+                      description: Subject is the name of the target the fact is about.
+                      minLength: 1
+                      type: string
+                  required:
+                  - condition
+                  - observedAt
+                  - source
+                  - status
+                  - subject
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+              request:
+                description: Request names the request that held the grant.
+                properties:
+                  name:
+                    type: string
+                  uid:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    type: string
+                required:
+                - name
+                - uid
+                type: object
+              time:
+                description: Time is the time the release was decided with.
+                format: date-time
+                type: string
+            required:
+            - contract
+            - evidence
+            - grant
+            - request
+            - time
+            type: object
+            x-kubernetes-validations:
+            - message: a release record cannot change
+              rule: self == oldSelf
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

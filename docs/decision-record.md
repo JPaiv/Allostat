@@ -70,11 +70,77 @@ spec:
       - 'budget shard=1 is full: 1 of 1 in use, 0 overdue, 0 failed'
 ```
 
+## The record of a release
+
+A grant that is closed by evidence gets a `ReleaseRecord`. It holds the
+input of the release and the evidence that closed the grant:
+
+| Field | What it holds |
+|---|---|
+| `spec.time` | The time the release was decided with. |
+| `spec.request` | The name and UID of the request that held the grant. |
+| `spec.contract` | The name and the full content of the contract that was used. |
+| `spec.grant` | The grant that was closed: target, times, and the failure report if there was one. |
+| `spec.observations` | Every observation the release could look at: those about the target, for a condition in `releaseWhen`. |
+| `spec.evidence` | The observations that closed the grant, one for each condition in `releaseWhen`. |
+
+```yaml
+apiVersion: allostat.io/v1alpha1
+kind: ReleaseRecord
+metadata:
+  name: restart-node-a-1-9c41d07be2a5
+  namespace: fleet
+spec:
+  time: "2026-01-01T12:10:31.000000Z"
+  request:
+    name: restart-node-a-1
+    uid: 0b7d9a52-3c1e-4f6a-8d2b-7e9f0a1b2c3d
+  contract:
+    name: restart
+    spec:
+      action: restart
+      grantTTL: 10m
+      requires:
+        - condition: PeerCanServe
+          maxAge: 1m
+      budgets:
+        - label: shard
+          max: 1
+      releaseWhen:
+        - condition: TargetServing
+          maxAge: 1m
+  grant:
+    request: restart-node-a-1
+    action: restart
+    target:
+      name: node-a
+      labels:
+        shard: "1"
+    grantedAt: "2026-01-01T12:00:01.000000Z"
+    deadline: "2026-01-01T12:10:01.000000Z"
+  observations:
+    - condition: TargetServing
+      subject: node-a
+      status: "True"
+      source: replica-health
+      observedAt: "2026-01-01T12:10:25.000000Z"
+  evidence:
+    - condition: TargetServing
+      subject: node-a
+      status: "True"
+      source: replica-health
+      observedAt: "2026-01-01T12:10:25.000000Z"
+```
+
+There is a record only for a release that happened. A check that kept the
+grant open writes nothing.
+
 ## Where it is kept
 
 A record is an object in the namespace of its request.
 
-- The status of the request names it, in `status.record`.
+- The status of the request names it: `status.record` for the decision,
+  `status.released.record` for a release.
 - It is owned by the request. When the request is deleted, the cluster
   deletes the record.
 - It cannot be changed. The API server refuses every update.
@@ -84,7 +150,8 @@ A record is an object in the namespace of its request.
 The coordinator writes the record first and the answer after it. An answer
 therefore never exists without its record. For a grant the ledger entry
 names the record too, so a coordinator that stopped between its writes
-finishes with the right record.
+finishes with the right record. A release is written in the same order:
+the record first, then `status.released`.
 
 The name of a record is the name of the request and a hash of the content.
 If two coordinators decide the same request at the same moment, each
@@ -95,7 +162,7 @@ until the request is deleted; it is not the record of the decision.
 ## How to check a record
 
 ```sh
-kubectl get decisionrecords -n fleet -o yaml | allostat replay
+kubectl get decisionrecords,releaserecords -n fleet -o yaml | allostat replay
 allostat replay record.yaml
 ```
 
@@ -104,6 +171,7 @@ decision core and prints one line for each:
 
 ```
 same       restart-node-b-1-3fa9c2d1e07b (request restart-node-b-1, Refused)
+same       restart-node-a-1-9c41d07be2a5 (request restart-node-a-1, released)
 ```
 
 It prints `DIFFERENT` with the difference, and ends with an error, if a
@@ -114,16 +182,14 @@ made the decision to tell them apart.
 
 To check the decision of one request, read `status.record` of the request
 and replay that record. Compare `spec.decision` of the record with the
-status of the request.
+status of the request. For a release, do the same with
+`status.released.record`.
 
 ## Limits
 
 - **No contract.** If there was not exactly one contract for the action,
   the coordinator refuses before it asks the decision core. The record has
   the reason and no contract, and there is nothing to play again.
-- **Releases.** A grant that is closed by evidence has that evidence as
-  text in `status.released` of the request. It has no record of its own
-  yet, and it cannot be played again.
 - **Size.** A record holds every open grant of the namespace. Keep one
   fleet in one namespace, not all fleets in one.
 - **Lifetime.** A record lives as long as its request. To keep records for

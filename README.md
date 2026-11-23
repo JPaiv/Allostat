@@ -66,6 +66,7 @@ telemetry, a lost report, a failed action) and 300 random time lines.
 | `ActionRequest` | the controller that wants to act | the action and the target; the decision is in the status |
 | `Ledger` | the coordinator only | the grants it gave in the namespace that are not closed |
 | `DecisionRecord` | the coordinator only | everything one decision was made from, and the answer |
+| `ReleaseRecord` | the coordinator only | everything one release by evidence was decided from, and the evidence |
 
 [Contracts](docs/contracts.md) explains every field, with examples.
 
@@ -115,7 +116,8 @@ but the budgets do not depend on it.
 Before the coordinator writes an answer, it writes a `DecisionRecord`:
 the contract, the request, the observations and the open grants it decided
 from. The status of the request names it. `allostat replay` plays a record
-through the decision core again and reports if the answer differs. See
+through the decision core again and reports if the answer differs. A
+release by evidence gets a `ReleaseRecord` in the same way. See
 [Decision record](docs/decision-record.md).
 
 The access rules the coordinator needs are in `config/rbac`. Nobody else

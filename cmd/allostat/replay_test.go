@@ -108,3 +108,66 @@ func TestReplayRefusesInputWithoutARecord(t *testing.T) {
 		t.Fatal("want an error for two files")
 	}
 }
+
+func releaseRecord(t *testing.T) *v1alpha1.ReleaseRecord {
+	t.Helper()
+	ar := &v1alpha1.ActionRequest{ObjectMeta: metav1.ObjectMeta{Name: "r3", Namespace: "fleet", UID: "uid-3"}}
+	contract := &v1alpha1.Contract{
+		ObjectMeta: metav1.ObjectMeta{Name: "restart"},
+		Spec: v1alpha1.ContractSpec{
+			Action:      "restart",
+			GrantTTL:    metav1.Duration{Duration: 10 * time.Minute},
+			ReleaseWhen: []v1alpha1.Requirement{{Condition: "TargetServing", MaxAge: metav1.Duration{Duration: time.Minute}}},
+		},
+	}
+	grant := admission.Grant{
+		RequestID: "r3", Action: "restart", Target: admission.Target{Name: "a"},
+		GrantedAt: t0.Add(-11 * time.Minute), Deadline: t0.Add(-time.Minute),
+	}
+	obs := []v1alpha1.Observation{{Spec: v1alpha1.ObservationSpec{
+		Condition: "TargetServing", Subject: "a", Status: metav1.ConditionTrue, Source: "replica-health",
+		ObservedAt: metav1.NewMicroTime(t0.Add(-10 * time.Second)),
+	}}}
+	d := admission.Release(contract.ToAdmission(), grant, []admission.Observation{obs[0].ToAdmission()}, t0)
+	if !d.Released {
+		t.Fatalf("want a release, got %q", d.Reasons)
+	}
+	r, err := v1alpha1.NewReleaseRecord(ar, contract, grant, obs, t0, d.Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.TypeMeta = metav1.TypeMeta{APIVersion: "allostat.io/v1alpha1", Kind: "ReleaseRecord"}
+	return r
+}
+
+func TestReplayOfReleaseRecords(t *testing.T) {
+	// Both kinds in one list, as `kubectl get decisionrecords,releaserecords` prints it.
+	list := map[string]any{"apiVersion": "v1", "kind": "List", "items": []any{record(t, "r1", metav1.ConditionTrue), releaseRecord(t)}}
+	var out bytes.Buffer
+	if err := replay([]string{write(t, list)}, nil, &out); err != nil {
+		t.Fatalf("a mixed list: %v\n%s", err, out.String())
+	}
+	if strings.Count(out.String(), "same") != 2 || !strings.Contains(out.String(), "request r3, released") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+
+	// The evidence is moved to before the deadline.
+	changed := releaseRecord(t)
+	changed.Spec.Observations[0].ObservedAt = metav1.NewMicroTime(t0.Add(-time.Minute))
+	out.Reset()
+	err := replay([]string{write(t, changed)}, nil, &out)
+	if err == nil || !strings.Contains(out.String(), "DIFFERENT") || !strings.Contains(out.String(), "the replay keeps the grant open") {
+		t.Fatalf("want a difference, got err=%v, output: %s", err, out.String())
+	}
+}
+
+func TestReplayRefusesAnEmptyListAndUnknownFields(t *testing.T) {
+	var out bytes.Buffer
+	if err := replay(nil, strings.NewReader("apiVersion: v1\nkind: List\nitems: []\n"), &out); err == nil {
+		t.Fatal("want an error for an empty list")
+	}
+	bad := "apiVersion: allostat.io/v1alpha1\nkind: ReleaseRecord\nspec:\n  surprise: 1\n"
+	if err := replay(nil, strings.NewReader(bad), &out); err == nil || !strings.Contains(err.Error(), "surprise") {
+		t.Fatalf("want an error for an unknown field, got %v", err)
+	}
+}

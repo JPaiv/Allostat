@@ -141,8 +141,47 @@ func (w *world) checkRecords() int {
 		if err := rec.Verify(); err != nil {
 			w.t.Errorf("record %q does not replay: %v", rec.Name, err)
 		}
+		if s.Released != nil {
+			w.checkRelease(ar)
+		}
 	}
 	return checked
+}
+
+// checkRelease looks at a released request: the release must name a
+// record, the record must be about this request and this release, and a
+// replay of it must release the grant by the same evidence.
+func (w *world) checkRelease(ar *v1alpha1.ActionRequest) {
+	w.t.Helper()
+	released := ar.Status.Released
+	if released.Record == "" {
+		w.t.Errorf("request %q has a release without a record", ar.Name)
+		return
+	}
+	var rec v1alpha1.ReleaseRecord
+	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: w.ns, Name: released.Record}, &rec); err != nil {
+		w.t.Errorf("request %q: release record %q: %v", ar.Name, released.Record, err)
+		return
+	}
+	rs := rec.Spec
+	if rs.Request.Name != ar.Name || rs.Request.UID != ar.UID {
+		w.t.Errorf("release record %q is about %q (%s), not %q (%s)", rec.Name, rs.Request.Name, rs.Request.UID, ar.Name, ar.UID)
+	}
+	if len(rec.OwnerReferences) != 1 || rec.OwnerReferences[0].UID != ar.UID {
+		w.t.Errorf("release record %q is not owned by its request: %+v", rec.Name, rec.OwnerReferences)
+	}
+	if !rs.Time.Equal(&released.At) {
+		w.t.Errorf("release record %q has the time %s, the status has %s", rec.Name, rs.Time, released.At)
+	}
+	if !rs.Grant.GrantedAt.Equal(ar.Status.DecidedAt) || !rs.Grant.Deadline.Equal(ar.Status.Deadline) {
+		w.t.Errorf("release record %q has another grant than the status: %+v", rec.Name, rs.Grant)
+	}
+	if len(rs.Evidence) != len(released.Evidence) {
+		w.t.Errorf("release record %q has %d observations as evidence, the status has %d", rec.Name, len(rs.Evidence), len(released.Evidence))
+	}
+	if err := rec.Verify(); err != nil {
+		w.t.Errorf("release record %q does not replay: %v", rec.Name, err)
+	}
 }
 
 func (w *world) create(obj client.Object) {
