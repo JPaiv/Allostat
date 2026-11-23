@@ -172,6 +172,32 @@ func TestCRDs(t *testing.T) {
 		mustFail(t, c.Update(ctx, r), notGranted)
 	})
 
+	t.Run("expiresAt cannot change", func(t *testing.T) {
+		const want = "expiresAt cannot change after the request is created"
+		at := metav1.NewTime(time.Now().Add(time.Minute).Truncate(time.Second))
+		later := metav1.NewTime(at.Add(time.Hour))
+
+		with := request("expires")
+		with.Spec.ExpiresAt = &at
+		if err := c.Create(ctx, with); err != nil {
+			t.Fatal(err)
+		}
+		moved := with.DeepCopy()
+		moved.Spec.ExpiresAt = &later
+		mustFail(t, c.Update(ctx, moved), want)
+		removed := with.DeepCopy()
+		removed.Spec.ExpiresAt = nil
+		mustFail(t, c.Update(ctx, removed), want)
+
+		without := request("never-expires")
+		if err := c.Create(ctx, without); err != nil {
+			t.Fatal(err)
+		}
+		added := without.DeepCopy()
+		added.Spec.ExpiresAt = &at
+		mustFail(t, c.Update(ctx, added), want)
+	})
+
 	t.Run("result is reported once and cannot change", func(t *testing.T) {
 		const fixed = "the result cannot change after it is reported"
 		r := request("result-once")

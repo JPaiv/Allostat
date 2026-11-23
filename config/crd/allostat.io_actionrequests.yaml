@@ -67,6 +67,15 @@ spec:
                 description: Action is the kind of action, for example "restart".
                 minLength: 1
                 type: string
+              expiresAt:
+                description: |-
+                  ExpiresAt is the time after which the requester no longer waits for
+                  an answer. The coordinator refuses a request that it decides at or
+                  after this time. Without it, a request that waits while the
+                  coordinator is down can still get a grant much later; the requester
+                  must then delete a request it gave up on.
+                format: date-time
+                type: string
               requester:
                 description: Requester is the controller that asks and that will do
                   the action.
@@ -117,6 +126,9 @@ spec:
                 is created
               rule: self.action == oldSelf.action && self.requester == oldSelf.requester
                 && self.target == oldSelf.target
+            - message: expiresAt cannot change after the request is created
+              rule: has(self.expiresAt) == has(oldSelf.expiresAt) && (!has(self.expiresAt)
+                || self.expiresAt == oldSelf.expiresAt)
             - message: the result cannot change after it is reported
               rule: '!has(oldSelf.result) || (has(self.result) && self.result == oldSelf.result)'
           status:

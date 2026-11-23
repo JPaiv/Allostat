@@ -72,6 +72,10 @@ func (in *ActionRequestList) DeepCopyObject() runtime.Object {
 func (in *ActionRequestSpec) DeepCopyInto(out *ActionRequestSpec) {
 	*out = *in
 	in.Target.DeepCopyInto(&out.Target)
+	if in.ExpiresAt != nil {
+		in, out := &in.ExpiresAt, &out.ExpiresAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Result != nil {
 		in, out := &in.Result, &out.Result
 		*out = new(Result)

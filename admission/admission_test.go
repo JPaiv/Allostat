@@ -446,3 +446,48 @@ func TestReleaseNeedsEveryCondition(t *testing.T) {
 		t.Fatalf("want a release with two observations, got %+v", d)
 	}
 }
+
+// A request can say how long its requester waits. An answer after that
+// time is a refusal: a grant would hold the budget for nobody.
+func TestExpiredRequestIsRefused(t *testing.T) {
+	a := node("a", "1", "false")
+	cases := []struct {
+		name      string
+		expiresAt time.Time
+		granted   bool
+	}{
+		{"no expiry", time.Time{}, true},
+		{"expires later", now.Add(time.Second), true},
+		{"expires exactly now", now, false},
+		{"expired", now.Add(-time.Second), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := request("r1", a)
+			req.ExpiresAt = tc.expiresAt
+			d := Decide(restartContract(), req, healthy("a"), nil, now)
+			if d.Granted != tc.granted {
+				t.Fatalf("granted = %v, want %v; reasons %q", d.Granted, tc.granted, d.Reasons)
+			}
+			if !tc.granted && !strings.Contains(strings.Join(d.Reasons, "\n"), "request expired at") {
+				t.Fatalf("reasons %q do not say that the request expired", d.Reasons)
+			}
+		})
+	}
+}
+
+// A request that already holds a grant keeps it after its expiry: the
+// expiry is only about the first answer.
+func TestExpiryDoesNotTakeAGrantBack(t *testing.T) {
+	a := node("a", "1", "false")
+	req := request("r1", a)
+	req.ExpiresAt = now.Add(time.Minute)
+	first := Decide(restartContract(), req, healthy("a"), nil, now)
+	if !first.Granted {
+		t.Fatalf("want grant, got %q", first.Reasons)
+	}
+	again := Decide(restartContract(), req, nil, []Grant{*first.Grant}, now.Add(time.Hour))
+	if !again.Granted || !again.Grant.Deadline.Equal(first.Grant.Deadline) {
+		t.Fatalf("want the same grant, got %+v", again)
+	}
+}

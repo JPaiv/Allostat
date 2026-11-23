@@ -51,7 +51,9 @@ const (
 	namespace   = "fleet"
 	newVersion  = "v2"
 	restartTime = 1500 * time.Millisecond
-	grantTTL    = 6 * time.Second
+	// answerWait is how long a worker waits for an answer.
+	answerWait = 10 * time.Second
+	grantTTL   = 6 * time.Second
 	// lostReport is the node whose worker stops before it reports.
 	lostReport = "n2a"
 	timeout    = 90 * time.Second
@@ -318,17 +320,24 @@ func writeObservation(ctx context.Context, k8s client.Client, name string, spec 
 func upgrade(ctx context.Context, k8s client.Client, f *fleet, n *node) error {
 	who := "upgrade " + n.name
 	for attempt := 1; ; attempt++ {
+		// The worker waits this long for an answer. A later answer is a
+		// refusal, so the request can be left behind.
+		waitUntil := metav1.NewTime(time.Now().Add(answerWait))
 		req := &v1alpha1.ActionRequest{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("restart-%s-%d", n.name, attempt), Namespace: namespace},
 			Spec: v1alpha1.ActionRequestSpec{
 				Action: "restart", Requester: "upgrade-controller",
-				Target: v1alpha1.Target{Name: n.name, Labels: map[string]string{"shard": n.shard}},
+				Target:    v1alpha1.Target{Name: n.name, Labels: map[string]string{"shard": n.shard}},
+				ExpiresAt: &waitUntil,
 			},
 		}
 		if err := k8s.Create(ctx, req); err != nil {
 			return err
 		}
-		if err := waitFor(ctx, k8s, req, func() bool { return req.Status.Decision != "" }); err != nil {
+		answer, stop := context.WithDeadline(ctx, waitUntil.Time)
+		err := waitFor(answer, k8s, req, func() bool { return req.Status.Decision != "" })
+		stop()
+		if err != nil {
 			// No answer means no action.
 			return fmt.Errorf("no answer from the coordinator: %w", err)
 		}

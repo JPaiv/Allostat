@@ -828,3 +828,110 @@ func TestLateSuccessAfterARelease(t *testing.T) {
 		t.Fatalf("the record of the release changed: %+v", s)
 	}
 }
+
+// The tests below are about a coordinator that was away. A coordinator
+// that is down is a reconciler that is not called.
+
+// A request that waited is decided with the evidence of the moment of the
+// decision, not of the moment it was asked.
+func TestWaitingRequestIsDecidedWithCurrentEvidence(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	w.request("r1", "a", "1")
+	if s := w.status("r1"); s.Decision != "" {
+		t.Fatalf("a request has an answer without a coordinator: %+v", s)
+	}
+
+	// The coordinator comes back an hour later.
+	w.now = t0.Add(time.Hour)
+	wantRefused(t, w.reconcile("r1"), `observation of "PeerCanServe" for "a" is 1h0m0s old`)
+}
+
+// requestUntil creates a request whose requester waits until a time. It
+// does not reconcile it.
+func (w *world) requestUntil(name, target, shard string, expiresAt time.Time) {
+	w.t.Helper()
+	at := metav1.NewTime(expiresAt)
+	w.create(&v1alpha1.ActionRequest{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: w.ns},
+		Spec: v1alpha1.ActionRequestSpec{
+			Action: "restart", Requester: "upgrade",
+			Target:    v1alpha1.Target{Name: target, Labels: map[string]string{"shard": shard}},
+			ExpiresAt: &at,
+		},
+	})
+}
+
+// The requester gave up while the coordinator was away. All evidence is
+// fresh when the coordinator comes back, but a grant would be for nobody.
+func TestRequestThatExpiredWhileWaitingIsRefused(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.requestUntil("r1", "a", "1", t0.Add(30*time.Second))
+	w.requestUntil("r2", "b", "2", t0.Add(10*time.Minute))
+
+	w.now = t0.Add(5 * time.Minute)
+	w.observe("a", metav1.ConditionTrue)
+	w.observe("b", metav1.ConditionTrue)
+	wantRefused(t, w.reconcile("r1"), "request expired at 2026-01-01T12:00:30Z, before it was decided")
+	wantGranted(t, w.reconcile("r2"))
+
+	// The refusal holds no budget.
+	wantGranted(t, w.ask("r3", "a", "1"))
+}
+
+// A requester without an expiry that gives up deletes its request. The
+// coordinator then has nothing to grant.
+func TestWithdrawnRequestGetsNoGrant(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	w.observe("b", metav1.ConditionTrue)
+	w.request("r1", "a", "1")
+	if err := k8s.Delete(context.Background(), &v1alpha1.ActionRequest{ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: w.ns}}); err != nil {
+		t.Fatal(err)
+	}
+	key := client.ObjectKey{Namespace: w.ns, Name: "r1"}
+	if _, err := w.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatal(err)
+	}
+	wantGranted(t, w.ask("r2", "b", "1"))
+}
+
+// An action that started goes on without the coordinator. Its report can
+// be written while the coordinator is away, also after the deadline, and
+// it closes the grant.
+func TestReportWithoutCoordinatorClosesTheGrant(t *testing.T) {
+	w := newWorld(t)
+	w.contract("restart")
+	w.observe("a", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+
+	// No reconcile from here on: the coordinator is away.
+	w.now = t0.Add(time.Hour)
+	w.report("r1", v1alpha1.OutcomeSucceeded)
+
+	// It comes back and the budget is free.
+	w.observe("b", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r2", "b", "1"))
+}
+
+// A grant that became overdue while the coordinator was away still blocks
+// when it comes back.
+func TestGrantStaysOpenWhileTheCoordinatorIsAway(t *testing.T) {
+	w := newWorld(t)
+	w.releaseContract()
+	w.observe("a", metav1.ConditionTrue)
+	wantGranted(t, w.ask("r1", "a", "1"))
+	// Seen serving before the deadline. No report.
+	w.now = t0.Add(9*time.Minute + 30*time.Second)
+	w.observeCondition("TargetServing", "a", metav1.ConditionTrue)
+
+	w.now = t0.Add(10*time.Minute + 10*time.Second)
+	w.observe("b", metav1.ConditionTrue)
+	wantRefused(t, w.ask("r2", "b", "1"), "1 of 1 in use, 1 overdue")
+	if s := w.reconcile("r1"); s.Released != nil {
+		t.Fatalf("released with evidence from before the deadline: %+v", s)
+	}
+}
