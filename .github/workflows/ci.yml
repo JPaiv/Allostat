@@ -28,3 +28,12 @@ jobs:
         run: make test
       - name: Example
         run: make example
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the image
+        run: make image
+      - name: The binary in the image starts
+        run: docker run --rm ghcr.io/jpaiv/allostat:dev -h

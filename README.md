@@ -142,10 +142,18 @@ is blocked until the node is seen serving after the deadline. The example
 fails if two nodes of one shard were ever out together. The code is in
 `examples/rolling-restart`.
 
+## Install
+
+## Install
+
+`config/` has everything to run the coordinator in a cluster: the resource
+types, the access rules and a deployment. No image is published yet, so
+you build it yourself. See [Install](docs/install.md).
+
 ## Planned
 
-Next is a container image and manifests to run the coordinator in a
-cluster. The order after that is in the [roadmap](ROADMAP.md).
+Next is the first release, with a published image. The order after that
+is in the [roadmap](ROADMAP.md).
 
 ## Development
 

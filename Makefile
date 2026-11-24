@@ -3,7 +3,10 @@ SETUP_ENVTEST  = go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25
 # Kubernetes version of the API server that the tests start.
 ENVTEST_K8S    = 1.37.0
 
-.PHONY: generate test check example
+# Name of the image that `make image` builds and config/manager runs.
+IMAGE          = ghcr.io/jpaiv/allostat:dev
+
+.PHONY: generate test check example image
 
 # Write the deep copy code and the CRD files from the Go types.
 generate:
@@ -23,3 +26,7 @@ check: generate
 # Run the rolling restart example against a local API server.
 example:
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S) -p path)" go run ./examples/rolling-restart
+
+# Build the coordinator image. This needs Docker.
+image:
+	docker build -t $(IMAGE) .

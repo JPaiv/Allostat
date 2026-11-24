@@ -9,10 +9,10 @@ What is done is in the [README](README.md).
 
 The first release, `v0.1`.
 
-- A container image and manifests: resource types, access rules and a
-  deployment of the coordinator.
 - A release process: tags, a changelog, and the image published from CI.
 - A quickstart: install on a local cluster and run one contract by hand.
+
+The image and the install files are there: see [Install](docs/install.md).
 
 ## 2. Make it easy to use from a controller
 
