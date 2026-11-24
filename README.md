@@ -144,7 +144,8 @@ fails if two nodes of one shard were ever out together. The code is in
 
 ## Planned
 
-- A container image and manifests to run the coordinator in a cluster.
+Next is a container image and manifests to run the coordinator in a
+cluster. The order after that is in the [roadmap](ROADMAP.md).
 
 ## Development
 
